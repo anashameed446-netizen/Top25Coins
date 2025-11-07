@@ -799,7 +799,7 @@
         let activeTrade = null;
         let tradeHistory = [];
 
-        // Update coins table
+        // Update coins table with smooth updates
         function updateCoinsTable(coins) {
             coinsData = coins;
             const container = document.getElementById('coins-container');
@@ -812,48 +812,111 @@
             // Sort by RSI descending
             const sortedCoins = [...coins].sort((a, b) => b.rsi - a.rsi);
 
-            let html = `
-                <table class="coins-table">
-                    <thead>
-                        <tr>
-                            <th>Symbol</th>
-                            <th>Price</th>
-                            <th>24h Change</th>
-                            <th>RSI</th>
-                            <th>Status</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-            `;
+            // Check if table already exists
+            let table = container.querySelector('table.coins-table');
+            let tbody = table ? table.querySelector('tbody') : null;
 
-            sortedCoins.forEach(coin => {
-                const rsiClass = coin.rsi >= 70 ? 'rsi-buy' : coin.rsi <= 30 ? 'rsi-sell' : 'rsi-neutral';
-                const status = coin.rsi >= 70 ? '🟢 BUY SIGNAL' : coin.rsi <= 30 ? '🔴 OVERSOLD' : '⚪ Monitoring';
-                
-                // Format 24h change with color
-                let change24hHtml = 'N/A';
-                if (coin.change_24h !== null && coin.change_24h !== undefined) {
-                    const changeClass = coin.change_24h >= 0 ? 'positive-change' : 'negative-change';
-                    const changeSign = coin.change_24h >= 0 ? '+' : '';
-                    change24hHtml = `<span class="${changeClass}">${changeSign}${coin.change_24h.toFixed(2)}%</span>`;
-                }
-                
-                html += `
-                    <tr>
-                        <td><strong>${coin.symbol}</strong></td>
-                        <td>$${coin.price.toLocaleString('en-US', {minimumFractionDigits: 4, maximumFractionDigits: 4})}</td>
-                        <td>${change24hHtml}</td>
-                        <td class="${rsiClass}">${coin.rsi.toFixed(2)}</td>
-                        <td>${status}</td>
-                    </tr>
+            if (!table || !tbody) {
+                // First time - create full table
+                let html = `
+                    <table class="coins-table">
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Price</th>
+                                <th>24h Change</th>
+                                <th>RSI</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
                 `;
-            });
 
-            html += '</tbody></table>';
-            container.innerHTML = html;
+                sortedCoins.forEach(coin => {
+                    html += createCoinRow(coin);
+                });
+
+                html += '</tbody></table>';
+                container.innerHTML = html;
+            } else {
+                // Update existing table - preserve scroll position and update rows smoothly
+                const scrollTop = container.scrollTop;
+                
+                // Create a map of existing rows by symbol
+                const existingRows = {};
+                Array.from(tbody.querySelectorAll('tr')).forEach(row => {
+                    const symbol = row.querySelector('td:first-child strong')?.textContent;
+                    if (symbol) {
+                        existingRows[symbol] = row;
+                    }
+                });
+
+                // Clear tbody and rebuild in correct order (maintains smooth updates)
+                tbody.innerHTML = '';
+                
+                // Add rows in sorted order
+                sortedCoins.forEach((coin) => {
+                    const newRow = createCoinRowElement(coin);
+                    tbody.appendChild(newRow);
+                });
+
+                // Restore scroll position
+                container.scrollTop = scrollTop;
+            }
 
             // Update stats
             document.getElementById('total-coins').textContent = coins.length;
+        }
+
+        // Helper function to create coin row HTML
+        function createCoinRow(coin) {
+            const rsiClass = coin.rsi >= 70 ? 'rsi-buy' : coin.rsi <= 30 ? 'rsi-sell' : 'rsi-neutral';
+            const status = coin.rsi >= 70 ? '🟢 BUY SIGNAL' : coin.rsi <= 30 ? '🔴 OVERSOLD' : '⚪ Monitoring';
+            
+            // Format 24h change with color
+            let change24hHtml = 'N/A';
+            if (coin.change_24h !== null && coin.change_24h !== undefined) {
+                const changeClass = coin.change_24h >= 0 ? 'positive-change' : 'negative-change';
+                const changeSign = coin.change_24h >= 0 ? '+' : '';
+                change24hHtml = `<span class="${changeClass}">${changeSign}${coin.change_24h.toFixed(2)}%</span>`;
+            }
+            
+            return `
+                <tr data-symbol="${coin.symbol}">
+                    <td><strong>${coin.symbol}</strong></td>
+                    <td>$${coin.price.toLocaleString('en-US', {minimumFractionDigits: 4, maximumFractionDigits: 4})}</td>
+                    <td>${change24hHtml}</td>
+                    <td class="${rsiClass}">${coin.rsi.toFixed(2)}</td>
+                    <td>${status}</td>
+                </tr>
+            `;
+        }
+
+        // Helper function to create coin row DOM element
+        function createCoinRowElement(coin) {
+            const tr = document.createElement('tr');
+            tr.setAttribute('data-symbol', coin.symbol);
+            
+            const rsiClass = coin.rsi >= 70 ? 'rsi-buy' : coin.rsi <= 30 ? 'rsi-sell' : 'rsi-neutral';
+            const status = coin.rsi >= 70 ? '🟢 BUY SIGNAL' : coin.rsi <= 30 ? '🔴 OVERSOLD' : '⚪ Monitoring';
+            
+            // Format 24h change with color
+            let change24hHtml = 'N/A';
+            if (coin.change_24h !== null && coin.change_24h !== undefined) {
+                const changeClass = coin.change_24h >= 0 ? 'positive-change' : 'negative-change';
+                const changeSign = coin.change_24h >= 0 ? '+' : '';
+                change24hHtml = `<span class="${changeClass}">${changeSign}${coin.change_24h.toFixed(2)}%</span>`;
+            }
+            
+            tr.innerHTML = `
+                <td><strong>${coin.symbol}</strong></td>
+                <td>$${coin.price.toLocaleString('en-US', {minimumFractionDigits: 4, maximumFractionDigits: 4})}</td>
+                <td>${change24hHtml}</td>
+                <td class="${rsiClass}">${coin.rsi.toFixed(2)}</td>
+                <td>${status}</td>
+            `;
+            
+            return tr;
         }
 
         // Update active trade

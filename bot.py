@@ -125,6 +125,13 @@ class BinanceRSIBot:
             # Check if RSI crossed above buy threshold (was below, now above)
             if previous_rsi < self.rsi_buy and current_rsi >= self.rsi_buy:
                 return True
+        # Also check if current RSI is above threshold and we don't have previous data yet
+        # This handles the case where a coin first appears in monitoring and is already above threshold
+        # But we only buy if it's clearly above the threshold (not just at threshold)
+        elif current_rsi > self.rsi_buy:
+            # If we don't have previous RSI, assume it was below threshold if current is significantly above
+            # This is a safety check - we prefer to wait for a clear crossing signal
+            return False
         return False
     
     def check_sell_condition(self, rsi: float) -> bool:
@@ -417,10 +424,18 @@ class BinanceRSIBot:
             print(f"✅ Restored active trade: {symbol}")
             return active_trade
             
+        except BinanceAPIException as e:
+            if e.code == -2015:
+                # API permission error - suppress verbose logging after first occurrence
+                if not hasattr(self, '_permission_error_logged'):
+                    print(f"⚠️  API permissions insufficient for account access (code -2015)")
+                    print(f"   Bot will continue in monitoring mode. Enable 'Spot & Margin Trading' permission to use trading features.")
+                    self._permission_error_logged = True
+            else:
+                print(f"❌ Error detecting existing positions: {e} (Code: {e.code})")
+            return None
         except Exception as e:
             print(f"❌ Error detecting existing positions: {e}")
-            import traceback
-            traceback.print_exc()
             return None
     
     def fetch_trade_history_from_binance(self, limit: int = 1000) -> List[Dict]:
@@ -561,10 +576,18 @@ class BinanceRSIBot:
             print(f"   ✅ Reconstructed {len(completed_trades)} completed trades from Binance history")
             return completed_trades
             
+        except BinanceAPIException as e:
+            if e.code == -2015:
+                # API permission error - suppress verbose logging after first occurrence
+                if not hasattr(self, '_permission_error_logged'):
+                    print(f"⚠️  API permissions insufficient for trade history (code -2015)")
+                    print(f"   Bot will continue in monitoring mode. Enable 'Spot & Margin Trading' permission to view trade history.")
+                    self._permission_error_logged = True
+            else:
+                print(f"❌ Error fetching trade history from Binance: {e} (Code: {e.code})")
+            return []
         except Exception as e:
             print(f"❌ Error fetching trade history from Binance: {e}")
-            import traceback
-            traceback.print_exc()
             return []
     
     def buy_order(self, symbol: str, quantity: float) -> Optional[Dict]:
@@ -797,7 +820,13 @@ class BinanceRSIBot:
                     if rsi is not None:
                         # Check if RSI crosses above buy threshold
                         if self.check_buy_condition(symbol, rsi):
-                            print(f"🔍 [MONITORING] BUY SIGNAL: {symbol} RSI crossed above {self.rsi_buy} (current: {rsi:.2f}) - Trading disabled")
+                            price = data.get('price', 0)
+                            change_24h = data.get('change_24h', 0)
+                            change_str = f"+{change_24h:.2f}%" if change_24h else "N/A"
+                            print(f"\n🟢 [BUY SIGNAL] {symbol} RSI crossed above {self.rsi_buy}!")
+                            print(f"   Current RSI: {rsi:.2f} | Price: ${price:.4f} | 24h Change: {change_str}")
+                            print(f"   ⚠️  Trading is DISABLED - Enable trading to execute buy order")
+                            print()
                             break
             return
         
@@ -871,12 +900,23 @@ class BinanceRSIBot:
                 data = best_candidate['data']
                 
                 # If multiple coins cross above threshold simultaneously, buy the one with highest RSI
+                price = data.get('price', 0)
+                change_24h = data.get('change_24h', 0)
+                change_str = f"+{change_24h:.2f}%" if change_24h else "N/A"
+                
                 if len(buy_candidates) > 1:
                     other_symbols = [c['symbol'] for c in buy_candidates[1:]]
-                    print(f"🔄 Multiple coins crossed above RSI {self.rsi_buy} simultaneously: {symbol} (RSI: {rsi:.2f}) selected (highest RSI)")
-                    print(f"   Other candidates ignored: {', '.join(other_symbols)}")
+                    print(f"\n🟢 [BUY SIGNAL] Multiple coins crossed above RSI {self.rsi_buy}!")
+                    print(f"   Selected: {symbol} (RSI: {rsi:.2f}) - Highest RSI")
+                    print(f"   Price: ${price:.4f} | 24h Change: {change_str}")
+                    print(f"   Other candidates: {', '.join(other_symbols)}")
+                    print(f"   Executing buy order...")
+                    print()
                 else:
-                    print(f"🔄 {symbol} RSI crossed above {self.rsi_buy} (current: {rsi:.2f}), buying...")
+                    print(f"\n🟢 [BUY SIGNAL] {symbol} RSI crossed above {self.rsi_buy}!")
+                    print(f"   Current RSI: {rsi:.2f} | Price: ${price:.4f} | 24h Change: {change_str}")
+                    print(f"   Executing buy order...")
+                    print()
                 
                 # Place buy order
                 order = self.buy_order(symbol, 0)  # Quantity will be calculated in buy_order
@@ -1006,20 +1046,29 @@ class BinanceRSIBot:
                 # Update coins data (emits updates incrementally for faster response)
                 self.update_coins_data(symbols, emit_updates=True)
                 
-                # Filter to only monitor coins with RSI < buy threshold (70)
-                # But always include active trade symbol if exists
-                filtered_coins_data = {}
+                # Track coins below buy threshold for logging
+                coins_below_threshold = []  # Track coins below buy threshold for logging
+                
+                # IMPORTANT: Check buy signals on ALL coins (not filtered) to catch when they cross above threshold
+                # We need to check all coins because a coin might cross above 70 and we need to detect it immediately
                 for symbol, data in coins_data.items():
                     rsi = data.get('rsi')
-                    # Include coin if RSI < buy threshold OR if it's the active trade symbol
-                    if rsi is not None and (rsi < self.rsi_buy or (self.active_trade and symbol == self.active_trade['symbol'])):
-                        filtered_coins_data[symbol] = data
+                    if rsi is not None:
+                        # Track coins below threshold for logging
+                        if rsi < self.rsi_buy:
+                            if not self.active_trade or symbol != self.active_trade['symbol']:
+                                coins_below_threshold.append({
+                                    'symbol': symbol,
+                                    'rsi': rsi,
+                                    'price': data.get('price', 0),
+                                    'change_24h': data.get('change_24h', 0)
+                                })
                 
-                # Update coins_data to only include filtered coins
-                coins_data = filtered_coins_data
+                # Coins below threshold are tracked but not printed to reduce terminal clutter
                 
-                # Check trading signals (MONITORING ONLY - TRADING DISABLED)
-                self.check_trading_signals()  # Only logs signals, doesn't execute trades
+                # Check trading signals on ALL coins (not filtered) to catch buy signals when they cross above threshold
+                # This ensures we detect when any coin crosses above 70, even if it's not in a filtered list
+                self.check_trading_signals()
                 
                 update_count += 1
                 
