@@ -90,10 +90,33 @@ trading_enabled = False  # Trading control flag
 class BinanceRSIBot:
     def __init__(self, api_key: str, api_secret: str, testnet: bool = False, rsi_config: dict = None):
         """Initialize Binance client"""
-        if testnet:
-            self.client = Client(api_key, api_secret, testnet=True)
-        else:
-            self.client = Client(api_key, api_secret)
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.testnet = testnet
+        self.client = None
+        self.geo_blocked = False
+        
+        # Try to initialize client, handle geographic restrictions gracefully
+        try:
+            if testnet:
+                self.client = Client(api_key, api_secret, testnet=True)
+            else:
+                self.client = Client(api_key, api_secret)
+            print("✅ Binance API client initialized successfully")
+        except BinanceAPIException as e:
+            if e.code == 0 and ("restricted location" in str(e).lower() or "eligibility" in str(e).lower()):
+                self.geo_blocked = True
+                print("❌ ERROR: Binance API is blocked from this server location")
+                print("   Binance does not allow API access from this geographic region")
+                print("   Solution: Use a server/VPS in a location where Binance API is accessible")
+                print("   The bot cannot function without Binance API access")
+                # Don't set client - bot will fail gracefully in run() method
+            else:
+                print(f"❌ ERROR: Binance API connection failed: {e}")
+                print(f"   Code: {e.code}")
+        except Exception as e:
+            print(f"❌ ERROR: Failed to initialize Binance client: {e}")
+            print(f"   The bot cannot function without Binance API access")
         
         self.rsi_period = 14
         # RSI thresholds - single values only
@@ -108,9 +131,15 @@ class BinanceRSIBot:
         self.update_interval = 1  # seconds - near real-time updates (1 second refresh)
         # Track previous RSI values to detect crossing above buy threshold
         self.previous_rsi = {}  # {symbol: previous_rsi_value}
+        # Track API permission status
+        self.has_account_permissions = None  # None = unknown, True = has permissions, False = no permissions
         
-        # Test API permissions
-        self.check_api_permissions()
+        # Test API permissions only if client is available
+        if self.client:
+            self.check_api_permissions()
+        else:
+            print("⚠️  Skipping API permission check - client not initialized")
+            self.has_account_permissions = False
     
     def update_rsi_settings(self, buy_rsi, sell_rsi):
         """Update RSI buy/sell thresholds"""
@@ -168,6 +197,10 @@ class BinanceRSIBot:
         Uses Binance ticker data which includes 24h priceChangePercent (same as Binance market)
         Only includes USDT pairs with TRADING status (active coins on Binance market)
         """
+        if not self.client:
+            print("❌ Cannot get top coins: Binance API client is not available")
+            return []
+        
         try:
             print("📡 Fetching active USDT trading pairs from Binance...")
             
@@ -277,6 +310,8 @@ class BinanceRSIBot:
     
     def get_klines(self, symbol: str, interval: str = '1h', limit: int = 100) -> List[float]:
         """Get klines (candlestick data) for RSI calculation"""
+        if not self.client:
+            return []
         try:
             klines = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
             prices = [float(k[4]) for k in klines]  # Close prices
@@ -287,6 +322,8 @@ class BinanceRSIBot:
     
     def get_current_price(self, symbol: str) -> Optional[float]:
         """Get current price of a symbol"""
+        if not self.client:
+            return None
         try:
             ticker = self.client.get_symbol_ticker(symbol=symbol)
             return float(ticker['price'])
@@ -955,6 +992,16 @@ class BinanceRSIBot:
         
         print("🤖 Bot starting...")
         print(f"📊 Trading mode: {'ENABLED' if trading_enabled else 'DISABLED (Monitoring only)'}")
+        
+        # Check if client is available
+        if not self.client:
+            print("❌ Cannot start bot: Binance API client is not available")
+            if self.geo_blocked:
+                print("   Reason: Geographic restriction - Binance API is blocked from this location")
+                print("   Please use a server in a location where Binance API is accessible")
+            print("   Bot will not start. Please fix the API connection issue.")
+            return
+        
         bot_running = True
         
         # Fetch trade history from Binance
@@ -1442,5 +1489,7 @@ if __name__ == '__main__':
     print("🚀 Starting Binance RSI Bot...")
     print("📡 Web interface available at http://localhost:5000")
     start_bot()
+    import eventlet
     socketio.run(app, host='0.0.0.0', port=5000, debug=False)
+
 
