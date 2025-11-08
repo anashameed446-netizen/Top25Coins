@@ -1165,7 +1165,7 @@ def get_config():
 @app.route('/api/config', methods=['POST'])
 def update_config():
     """Update configuration"""
-    global API_KEY, API_SECRET, TESTNET, bot
+    global API_KEY, API_SECRET, TESTNET, bot, bot_running
     
     data = request.json
     api_key = data.get('api_key', '').strip()
@@ -1184,12 +1184,27 @@ def update_config():
         API_SECRET = api_secret
         TESTNET = testnet
         
-        # Reinitialize bot with new credentials
+        # Stop existing bot if running
         if bot:
-            bot.client = Client(API_KEY, API_SECRET, testnet=TESTNET)
+            print("🛑 Stopping existing bot to apply new API credentials...")
+            global bot_running
+            bot_running = False
+            # Wait a moment for bot thread to stop
+            time.sleep(2)
+            bot_running = True  # Reset for new bot instance
         
-        return jsonify({'success': True, 'message': 'Configuration updated successfully'})
+        # Reinitialize bot with new credentials
+        print("🔄 Restarting bot with new API credentials...")
+        rsi_cfg = load_rsi_config()
+        bot = BinanceRSIBot(API_KEY, API_SECRET, TESTNET, rsi_config=rsi_cfg)
+        bot_thread = threading.Thread(target=bot.run, daemon=True)
+        bot_thread.start()
+        
+        return jsonify({'success': True, 'message': 'Configuration updated successfully - Bot restarted with new credentials'})
     except Exception as e:
+        print(f"❌ Error updating config: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/api/trading/status', methods=['GET'])
@@ -1489,7 +1504,6 @@ if __name__ == '__main__':
     print("🚀 Starting Binance RSI Bot...")
     print("📡 Web interface available at http://localhost:5000")
     start_bot()
-    import eventlet
     socketio.run(app, host='0.0.0.0', port=5000, debug=False)
 
 
