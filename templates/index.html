@@ -919,6 +919,19 @@
             return tr;
         }
 
+        // Update stop trading button state based on active trade
+        function updateStopTradingButton() {
+            const stopBtn = document.getElementById('stop-trading');
+            // Enable stop trading button ONLY if there is an active trade
+            if (activeTrade) {
+                stopBtn.disabled = false;
+                stopBtn.title = 'Click to stop trading and close active position';
+            } else {
+                stopBtn.disabled = true;
+                stopBtn.title = 'No active trade - Stop trading is disabled';
+            }
+        }
+
         // Update active trade
         function updateActiveTrade(trade) {
             activeTrade = trade;
@@ -927,6 +940,8 @@
             if (!trade) {
                 container.innerHTML = '<div class="no-active-trade">No active trade</div>';
                 document.getElementById('active-trades-count').textContent = '0';
+                // Update stop trading button state
+                updateStopTradingButton();
                 return;
             }
 
@@ -970,6 +985,8 @@
             `;
 
             document.getElementById('active-trades-count').textContent = '1';
+            // Update stop trading button state
+            updateStopTradingButton();
         }
 
         // Update trade history
@@ -1032,6 +1049,7 @@
 
         socket.on('active_trade_update', (data) => {
             updateActiveTrade(data.active_trade);
+            // Button state is updated inside updateActiveTrade
         });
 
         socket.on('trade_update', (trade) => {
@@ -1110,9 +1128,13 @@
                     console.log('Active trade loaded from Binance:', data.active_trade.symbol);
                 } else {
                     console.log('No active trade found in Binance account');
+                    // Update to clear any existing active trade and update button state
+                    updateActiveTrade(null);
                 }
             } catch (error) {
                 console.error('Error loading active trade:', error);
+                // On error, still update button state based on current activeTrade variable
+                updateStopTradingButton();
             }
         }
 
@@ -1213,19 +1235,19 @@
             tradingEnabled = enabled;
             const statusEl = document.getElementById('trading-status');
             const startBtn = document.getElementById('start-trading');
-            const stopBtn = document.getElementById('stop-trading');
             
             if (enabled) {
                 statusEl.textContent = 'ENABLED';
                 statusEl.className = 'status-indicator status-enabled';
                 startBtn.disabled = true;
-                stopBtn.disabled = false;
             } else {
                 statusEl.textContent = 'DISABLED';
                 statusEl.className = 'status-indicator status-disabled';
                 startBtn.disabled = false;
-                stopBtn.disabled = true;
             }
+            
+            // Stop trading button state is controlled by active trade, not trading status
+            updateStopTradingButton();
         }
 
         // Save API credentials
@@ -1313,12 +1335,19 @@
             // Check if there's an active trade
             let confirmMessage = 'Are you sure you want to stop trading?';
             if (activeTrade) {
-                confirmMessage = `Are you sure you want to stop trading?\n\n⚠️ You have an active trade: ${activeTrade.symbol}\nThis trade will be SOLD immediately before stopping trading.`;
+                confirmMessage = `Are you sure you want to stop trading?\n\n⚠️ You have an active trade: ${activeTrade.symbol}\nThis trade will be SOLD immediately before stopping trading (regardless of RSI).`;
+            } else {
+                confirmMessage = `Are you sure you want to stop trading?\n\n⚠️ All active positions in your Binance account will be sold immediately (regardless of RSI).`;
             }
             
             if (!confirm(confirmMessage)) {
                 return;
             }
+            
+            const stopBtn = document.getElementById('stop-trading');
+            const originalText = stopBtn.innerHTML;
+            stopBtn.disabled = true;
+            stopBtn.innerHTML = '<span>⏳ Closing positions...</span>';
             
             try {
                 const response = await fetch('/api/trading/stop', {
@@ -1331,18 +1360,25 @@
                     updateTradingStatus(false);
                     const messageEl = document.getElementById('config-message');
                     
-                    // Check if a trade was sold
-                    if (result.trade_sold && result.symbol) {
-                        messageEl.textContent = `✅ Trading stopped - Active trade ${result.symbol} was sold`;
+                    // Check if trades were sold
+                    if (result.trade_sold && result.symbols && result.symbols.length > 0) {
+                        const symbolsStr = result.symbols.join(', ');
+                        if (result.symbols.length === 1) {
+                            messageEl.textContent = `✅ Trading stopped - Position ${symbolsStr} was sold`;
+                        } else {
+                            messageEl.textContent = `✅ Trading stopped - ${result.positions_closed} position(s) sold: ${symbolsStr}`;
+                        }
                         messageEl.className = 'message success';
                         // Clear active trade display
                         updateActiveTrade(null);
-                        // Reload trade history to show the new trade
+                        // Reload trade history to show the new trades
                         loadTradeHistory();
                         loadTradeStats();
                     } else {
                         messageEl.textContent = result.message;
                         messageEl.className = 'message success';
+                        // Clear active trade display
+                        updateActiveTrade(null);
                     }
                     
                     messageEl.style.display = 'block';
@@ -1350,10 +1386,43 @@
                         messageEl.style.display = 'none';
                     }, 5000);
                 } else {
-                    alert(result.message);
+                    // Error occurred - positions may still be active
+                    const messageEl = document.getElementById('config-message');
+                    messageEl.textContent = `❌ ${result.message}`;
+                    messageEl.className = 'message error';
+                    messageEl.style.display = 'block';
+                    setTimeout(() => {
+                        messageEl.style.display = 'none';
+                    }, 5000);
+                    
+                    // Check if positions are still active
+                    if (result.positions_still_active) {
+                        // Reload active trade to update button state
+                        loadActiveTrade();
+                    } else {
+                        // No positions active, clear active trade
+                        updateActiveTrade(null);
+                    }
+                    
+                    // Update trading status anyway
+                    updateTradingStatus(false);
                 }
             } catch (error) {
-                alert('Error stopping trading: ' + error.message);
+                const messageEl = document.getElementById('config-message');
+                messageEl.textContent = `❌ Error stopping trading: ${error.message}`;
+                messageEl.className = 'message error';
+                messageEl.style.display = 'block';
+                setTimeout(() => {
+                    messageEl.style.display = 'none';
+                }, 5000);
+                
+                // Reload active trade to check if positions still exist
+                loadActiveTrade();
+                updateTradingStatus(false);
+            } finally {
+                // Restore button text and update state
+                stopBtn.innerHTML = originalText;
+                updateStopTradingButton();
             }
         });
 

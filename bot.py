@@ -320,15 +320,24 @@ class BinanceRSIBot:
             print(f"Error getting klines for {symbol}: {e}")
             return []
     
-    def get_current_price(self, symbol: str) -> Optional[float]:
+    def get_current_price(self, symbol: str, silent: bool = False) -> Optional[float]:
         """Get current price of a symbol"""
         if not self.client:
             return None
         try:
             ticker = self.client.get_symbol_ticker(symbol=symbol)
             return float(ticker['price'])
+        except BinanceAPIException as e:
+            if not silent:
+                if e.code == -1121:
+                    # Invalid symbol - don't log this as it's expected for some assets
+                    pass
+                else:
+                    print(f"⚠️  Error getting price for {symbol}: {e.message} (Code: {e.code})")
+            return None
         except Exception as e:
-            print(f"Error getting price for {symbol}: {e}")
+            if not silent:
+                print(f"⚠️  Error getting price for {symbol}: {e}")
             return None
     
     def detect_existing_positions(self) -> Optional[Dict]:
@@ -354,9 +363,9 @@ class BinanceRSIBot:
                 symbol = f"{asset}USDT"
                 # Check if this is a valid trading pair
                 try:
-                    # Try to get price to verify it's a valid pair
-                    price = self.get_current_price(symbol)
-                    if price:
+                    # Try to get price to verify it's a valid pair (silently to avoid error spam)
+                    price = self.get_current_price(symbol, silent=True)
+                    if price and price > 0:
                         # Check if there's an open position (buy trades that haven't been fully sold)
                         # This ensures we only treat actual open positions as active trades, not leftover balances
                         try:
@@ -729,58 +738,483 @@ class BinanceRSIBot:
             traceback.print_exc()
             return None
     
+    def cancel_open_orders(self, symbol: str) -> bool:
+        """Cancel all open orders for a symbol"""
+        try:
+            open_orders = self.client.get_open_orders(symbol=symbol)
+            if open_orders:
+                print(f"   ⚠️  Found {len(open_orders)} open order(s) for {symbol}, cancelling...")
+                for order in open_orders:
+                    try:
+                        self.client.cancel_order(symbol=symbol, orderId=order['orderId'])
+                        print(f"   ✅ Cancelled order {order['orderId']} for {symbol}")
+                    except Exception as e:
+                        print(f"   ⚠️  Failed to cancel order {order['orderId']}: {e}")
+                # Wait a moment for orders to be cancelled
+                time.sleep(0.5)
+                return True
+            return False
+        except Exception as e:
+            print(f"   ⚠️  Error checking open orders for {symbol}: {e}")
+            return False
+    
     def sell_order(self, symbol: str, quantity: float) -> Optional[Dict]:
         """Place a sell order"""
         try:
-            # Get account balance for the coin
+            # Get account balance for the coin (check both free and locked)
             account = self.client.get_account()
-            balances = {b['asset']: float(b['free']) for b in account['balances']}
+            free_balances = {b['asset']: float(b['free']) for b in account['balances']}
+            locked_balances = {b['asset']: float(b['locked']) for b in account['balances']}
+            total_balances = {b['asset']: float(b['free']) + float(b['locked']) for b in account['balances']}
             
             coin_asset = symbol.replace('USDT', '')
-            if coin_asset not in balances or balances[coin_asset] < 0.0001:
-                print(f"Insufficient {coin_asset} balance")
+            free_balance = free_balances.get(coin_asset, 0)
+            locked_balance = locked_balances.get(coin_asset, 0)
+            total_balance = total_balances.get(coin_asset, 0)
+            
+            # Check if we have any balance at all
+            if total_balance < 0.0001:
+                print(f"   ⚠️  No {coin_asset} balance found (free: {free_balance:.8f}, locked: {locked_balance:.8f})")
                 return None
             
-            # Use available balance
-            quantity = balances[coin_asset]
+            # If balance is locked, try to cancel open orders first
+            if locked_balance > 0.0001 and free_balance < 0.0001:
+                print(f"   ⚠️  {coin_asset} balance is locked ({locked_balance:.8f}) - checking for open orders...")
+                had_open_orders = self.cancel_open_orders(symbol)
+                # Recheck balance after cancelling orders
+                account = self.client.get_account()
+                free_balances = {b['asset']: float(b['free']) for b in account['balances']}
+                locked_balances_new = {b['asset']: float(b['locked']) for b in account['balances']}
+                free_balance = free_balances.get(coin_asset, 0)
+                locked_balance_new = locked_balances_new.get(coin_asset, 0)
+                
+                if free_balance < 0.0001:
+                    if had_open_orders:
+                        print(f"   ⚠️  {coin_asset} balance still locked after cancelling orders.")
+                    else:
+                        print(f"   ⚠️  {coin_asset} balance is locked but no open orders found.")
+                    print(f"   📊 Balance details: Free: {free_balance:.8f}, Locked: {locked_balance_new:.8f}, Total: {total_balance:.8f}")
+                    print(f"   💡 Balance may be locked in:")
+                    print(f"      - Margin trading account")
+                    print(f"      - Futures/derivatives account")
+                    print(f"      - Staking or savings products")
+                    print(f"      - Other Binance services")
+                    print(f"   💡 Please manually transfer balance to Spot wallet or close positions in other accounts")
+                    return None
+                else:
+                    print(f"   ✅ Balance freed after cancelling orders: {free_balance:.8f}")
+                    # Update available quantity with freed balance
+                    available_quantity = min(quantity, free_balance)
             
-            # Get symbol info for precision
+            # Check if we have free balance to sell
+            if free_balance < 0.0001:
+                print(f"   ⚠️  Insufficient free {coin_asset} balance: {free_balance:.8f} (locked: {locked_balance:.8f})")
+                return None
+            
+            # Always use the actual free balance from account (not the passed quantity)
+            # The quantity parameter is ignored - we use actual account balance
+            # Apply a small safety margin (99.95%) to avoid precision/rounding issues
+            # This accounts for any floating point precision errors
+            available_quantity = free_balance * 0.9995
+            
+            # Get symbol info for precision and filters
             exchange_info = self.client.get_symbol_info(symbol)
             if not exchange_info:
+                print(f"   ❌ Symbol {symbol} not found in exchange info")
                 return None
             
-            # Get quantity precision
+            # Get quantity precision and minimum order size
             quantity_precision = None
+            min_qty = 0
+            min_notional = 0  # Minimum order value in USDT
+            
             for filter_item in exchange_info['filters']:
                 if filter_item['filterType'] == 'LOT_SIZE':
                     step_size = float(filter_item['stepSize'])
-                    quantity_precision = len(str(step_size).split('.')[-1].rstrip('0'))
-                    break
+                    # Calculate precision more accurately
+                    if step_size >= 1:
+                        quantity_precision = 0
+                    else:
+                        # Count decimal places, handling scientific notation
+                        step_str = f"{step_size:.10f}".rstrip('0')
+                        if '.' in step_str:
+                            quantity_precision = len(step_str.split('.')[1])
+                        else:
+                            quantity_precision = 0
+                    min_qty = float(filter_item.get('minQty', 0))
+                elif filter_item['filterType'] == 'MIN_NOTIONAL':
+                    min_notional = float(filter_item.get('minNotional', 0))
             
-            if quantity_precision:
-                quantity = round(quantity, quantity_precision)
+            # Round quantity DOWN to proper precision (floor, not round)
+            # This ensures we never request more than available
+            if quantity_precision is not None:
+                # Round down to avoid exceeding available balance
+                multiplier = 10 ** quantity_precision
+                available_quantity = int(available_quantity * multiplier) / multiplier
+            else:
+                # Round down to 8 decimal places
+                available_quantity = int(available_quantity * 100000000) / 100000000
             
-            if quantity <= 0:
+            # Final safety check: ensure we never exceed free balance
+            available_quantity = min(available_quantity, free_balance)
+            
+            # Check minimum quantity
+            if min_qty > 0 and available_quantity < min_qty:
+                print(f"   ⚠️  Quantity {available_quantity} below minimum {min_qty} for {symbol}")
+                return None
+            
+            # Check minimum notional (order value)
+            current_price = self.get_current_price(symbol, silent=True)
+            if current_price:
+                order_value = available_quantity * current_price
+                if min_notional > 0 and order_value < min_notional:
+                    print(f"   ⚠️  Order value ${order_value:.2f} below minimum ${min_notional:.2f} for {symbol}")
+                    return None
+            
+            if available_quantity <= 0:
+                print(f"   ⚠️  Invalid quantity: {available_quantity}")
                 return None
             
             # Place market sell order
-            order = self.client.create_order(
-                symbol=symbol,
-                side=Client.SIDE_SELL,
-                type=Client.ORDER_TYPE_MARKET,
-                quantity=quantity
-            )
-            
-            current_price = self.get_current_price(symbol)
-            print(f"✅ SELL ORDER EXECUTED: {symbol} | Quantity: {quantity} | Price: {current_price}")
-            return order
-            
+            try:
+                order = self.client.create_order(
+                    symbol=symbol,
+                    side=Client.SIDE_SELL,
+                    type=Client.ORDER_TYPE_MARKET,
+                    quantity=available_quantity
+                )
+                
+                executed_price = current_price if current_price else 0
+                executed_qty = available_quantity
+                
+                if order.get('fills'):
+                    # Calculate weighted average price from all fills (more accurate)
+                    fills = order.get('fills', [])
+                    if fills:
+                        total_qty = sum(float(f['qty']) for f in fills)
+                        total_cost = sum(float(f['price']) * float(f['qty']) for f in fills)
+                        if total_qty > 0:
+                            executed_price = total_cost / total_qty
+                            executed_qty = total_qty
+                elif order.get('executedQty'):
+                    executed_qty = float(order.get('executedQty', available_quantity))
+                else:
+                    # Use the quantity we actually sent
+                    executed_qty = available_quantity
+                
+                print(f"   ✅ SELL ORDER EXECUTED: {symbol} | Quantity: {executed_qty} | Price: {executed_price:.8f}")
+                return order
+                
+            except BinanceAPIException as e:
+                if e.code == -2010:
+                    # Get current balance for better error message
+                    try:
+                        account_check = self.client.get_account()
+                        balances_detail = {b['asset']: {'free': float(b['free']), 'locked': float(b['locked'])} 
+                                         for b in account_check['balances'] if b['asset'] == coin_asset}
+                        if balances_detail:
+                            bal = balances_detail[coin_asset]
+                            print(f"   ❌ Insufficient balance for {symbol}: {e.message}")
+                            print(f"   📊 Current balance: Free: {bal['free']:.8f}, Locked: {bal['locked']:.8f}, Requested: {available_quantity:.8f}")
+                            if bal['locked'] > 0.0001:
+                                print(f"   💡 Balance is locked - may be in open orders, margin, futures, or staking")
+                        else:
+                            print(f"   ❌ Insufficient balance for {symbol}: {e.message}")
+                            print(f"   📊 No {coin_asset} balance found in account")
+                    except Exception:
+                        print(f"   ❌ Insufficient balance for {symbol}: {e.message}")
+                elif e.code == -1121:
+                    print(f"   ❌ Invalid symbol {symbol}: {e.message}")
+                elif e.code == -1013:
+                    # Check if it's LOT_SIZE or MIN_NOTIONAL error
+                    if "LOT_SIZE" in str(e.message) or "stepSize" in str(e.message):
+                        print(f"   ❌ Order would violate LOT_SIZE filter for {symbol}: {e.message}")
+                    elif "MIN_NOTIONAL" in str(e.message) or "notional" in str(e.message).lower():
+                        print(f"   ❌ Order value too small for {symbol}: {e.message}")
+                    else:
+                        print(f"   ❌ Filter violation for {symbol}: {e.message}")
+                else:
+                    print(f"   ❌ Binance API Error selling {symbol}: {e.message} (Code: {e.code})")
+                return None
+                
         except BinanceAPIException as e:
-            print(f"Binance API Error during sell: {e}")
+            print(f"   ❌ Binance API Error during sell for {symbol}: {e.message} (Code: {e.code})")
             return None
         except Exception as e:
-            print(f"Error placing sell order: {e}")
+            print(f"   ❌ Error placing sell order for {symbol}: {e}")
+            import traceback
+            traceback.print_exc()
             return None
+    
+    def check_active_positions(self) -> List[Dict]:
+        """Check for active positions in Binance account without selling
+        Returns list of active positions with details
+        Only includes positions with free balance that can actually be sold
+        """
+        active_positions = []
+        
+        if not self.client:
+            return active_positions
+        
+        try:
+            # Get account balances - separate free and locked
+            account = self.client.get_account()
+            free_balances = {b['asset']: float(b['free']) for b in account['balances']}
+            locked_balances = {b['asset']: float(b['locked']) for b in account['balances']}
+            total_balances = {b['asset']: float(b['free']) + float(b['locked']) for b in account['balances']}
+            
+            # List of stablecoins to exclude (these are just balances, not trades)
+            stablecoins = {'FDUSD', 'USDC', 'BUSD', 'TUSD', 'DAI', 'PAXG', 'USDP', 'USDD', 'PYUSD'}
+            
+            # Get exchange info to verify valid symbols
+            try:
+                exchange_info = self.client.get_exchange_info()
+                valid_symbols = {s['symbol'] for s in exchange_info['symbols'] if s['status'] == 'TRADING'}
+            except Exception:
+                valid_symbols = set()  # If we can't get exchange info, we'll verify by trying to get price
+            
+            # Find all non-USDT coins with balance > 0.001
+            for asset, total_balance in total_balances.items():
+                # Skip USDT, stablecoins, and very small balances
+                if asset == 'USDT' or asset in stablecoins or total_balance < 0.0001:
+                    continue
+                
+                symbol = f"{asset}USDT"
+                
+                # First check if symbol is valid (if we have exchange info)
+                if valid_symbols and symbol not in valid_symbols:
+                    # Try alternative symbol format (some coins might have different quote asset)
+                    continue
+                
+                # Verify this is a valid trading pair by checking if we can get price (silently)
+                price = self.get_current_price(symbol, silent=True)
+                if price and price > 0:
+                    free_balance = free_balances.get(asset, 0)
+                    locked_balance = locked_balances.get(asset, 0)
+                    
+                    # Prioritize free balance (can be sold immediately)
+                    # But also include positions with locked balance (might be in open orders)
+                    sellable_balance = free_balance
+                    
+                    # If we have locked balance but no free balance, check for open orders
+                    if locked_balance > 0.0001 and free_balance < 0.0001:
+                        try:
+                            open_orders = self.client.get_open_orders(symbol=symbol)
+                            if open_orders:
+                                # There are open orders - we can try to cancel them and then sell
+                                # Include this position but mark it as needing order cancellation
+                                sellable_balance = 0  # Will need to cancel orders first
+                            else:
+                                # Locked but no open orders - might be in margin or other services
+                                # Skip for now as we can't sell it
+                                continue
+                        except Exception:
+                            # Can't check orders, skip this position
+                            continue
+                    
+                    # Verify minimum order value (usually 5-10 USDT)
+                    # Use free balance for order value calculation
+                    if sellable_balance > 0:
+                        order_value = sellable_balance * price
+                        if order_value >= 5.0:  # Minimum order value check
+                            active_positions.append({
+                                'symbol': symbol,
+                                'asset': asset,
+                                'quantity': sellable_balance,  # Use free balance
+                                'free_balance': free_balance,
+                                'locked_balance': locked_balance,
+                                'total_balance': total_balance,
+                                'current_price': price,
+                                'order_value': order_value,
+                                'has_locked_balance': locked_balance > 0.0001
+                            })
+                    elif locked_balance > 0.0001:
+                        # Has locked balance - include it but we'll need to cancel orders first
+                        order_value = locked_balance * price
+                        if order_value >= 5.0:
+                            active_positions.append({
+                                'symbol': symbol,
+                                'asset': asset,
+                                'quantity': locked_balance,  # Will cancel orders first
+                                'free_balance': free_balance,
+                                'locked_balance': locked_balance,
+                                'total_balance': total_balance,
+                                'current_price': price,
+                                'order_value': order_value,
+                                'has_locked_balance': True,
+                                'needs_order_cancellation': True
+                            })
+                    # Note: Very small positions (< 5 USDT) are skipped as they may be below minimum trade size
+            
+            return active_positions
+            
+        except BinanceAPIException as e:
+            if e.code == -2015:
+                print(f"⚠️  API permissions insufficient to check positions (code -2015)")
+            else:
+                print(f"❌ Binance API Error while checking positions: {e} (Code: {e.code})")
+            return active_positions
+        except Exception as e:
+            print(f"❌ Error checking positions: {e}")
+            import traceback
+            traceback.print_exc()
+            return active_positions
+    
+    def close_all_positions(self) -> List[Dict]:
+        """Close all active positions by selling any non-USDT coins in the account
+        Returns list of sold positions with details
+        """
+        sold_positions = []
+        
+        if not self.client:
+            print("❌ Cannot close positions - Binance client not initialized")
+            return sold_positions
+        
+        try:
+            print("🛑 Checking Binance account for active positions to close...")
+            
+            # Get active positions
+            positions_to_close = self.check_active_positions()
+            
+            if not positions_to_close:
+                print("✅ No active positions found in Binance account")
+                return sold_positions
+            
+            print(f"📊 Found {len(positions_to_close)} active position(s) to close:")
+            for pos in positions_to_close:
+                value = pos.get('order_value', pos['quantity'] * pos['current_price'])
+                print(f"   - {pos['symbol']}: {pos['quantity']} (${value:.2f} USDT)")
+            
+            # Close each position
+            for position in positions_to_close:
+                symbol = position['symbol']
+                asset = position['asset']
+                quantity = position['quantity']
+                has_locked = position.get('has_locked_balance', False)
+                needs_cancellation = position.get('needs_order_cancellation', False)
+                
+                try:
+                    order_value = position.get('order_value', position['quantity'] * position['current_price'])
+                    free_balance = position.get('free_balance', quantity)
+                    locked_balance = position.get('locked_balance', 0)
+                    
+                    if needs_cancellation or has_locked:
+                        print(f"💰 Attempting to sell {symbol} (quantity: {quantity}, value: ${order_value:.2f})...")
+                        if locked_balance > 0:
+                            print(f"   ⚠️  Balance is locked ({locked_balance:.8f}) - will cancel open orders first")
+                    else:
+                        print(f"💰 Attempting to sell {symbol} (quantity: {quantity}, value: ${order_value:.2f})...")
+                    
+                    # If balance is locked, cancel open orders first
+                    if needs_cancellation or (has_locked and free_balance < 0.0001):
+                        cancelled = self.cancel_open_orders(symbol)
+                        if cancelled:
+                            # Wait a moment and recheck balance
+                            time.sleep(1)
+                    
+                    # Always get fresh balance from account before selling
+                    # This ensures we use the actual available balance, not cached values
+                    account = self.client.get_account()
+                    fresh_free_balances = {b['asset']: float(b['free']) for b in account['balances']}
+                    fresh_free_balance = fresh_free_balances.get(asset, 0)
+                    
+                    if fresh_free_balance < 0.0001:
+                        print(f"   ⚠️  No free balance available for {symbol} (Free: {fresh_free_balance:.8f})")
+                        continue
+                    
+                    print(f"   📊 Using actual free balance: {fresh_free_balance:.8f} {asset}")
+                    
+                    # Place sell order with actual free balance (quantity parameter is ignored, we use account balance)
+                    order = self.sell_order(symbol, fresh_free_balance)
+                    
+                    if order:
+                        # Get executed details
+                        sell_price = position['current_price']
+                        sell_quantity = fresh_free_balance  # Use the balance we actually tried to sell
+                        
+                        if order.get('fills'):
+                            # Get average fill price from all fills
+                            fills = order.get('fills', [])
+                            if fills:
+                                total_qty = sum(float(f['qty']) for f in fills)
+                                total_cost = sum(float(f['price']) * float(f['qty']) for f in fills)
+                                if total_qty > 0:
+                                    sell_price = total_cost / total_qty
+                        if order.get('executedQty'):
+                            sell_quantity = float(order['executedQty'])
+                        
+                        # Try to get buy price from active_trade if available
+                        buy_price = None
+                        buy_time = None
+                        buy_rsi = None
+                        
+                        if self.active_trade and self.active_trade.get('symbol') == symbol:
+                            buy_price = self.active_trade.get('buy_price')
+                            buy_time = self.active_trade.get('buy_time')
+                            buy_rsi = self.active_trade.get('buy_rsi')
+                        else:
+                            # Try to get buy price from trade history
+                            try:
+                                trades = self.client.get_my_trades(symbol=symbol, limit=50)
+                                if trades:
+                                    # Get most recent buy trade
+                                    buy_trades = [t for t in trades if t['isBuyer']]
+                                    if buy_trades:
+                                        latest_buy = max(buy_trades, key=lambda x: x['time'])
+                                        buy_price = float(latest_buy['price'])
+                                        buy_time = datetime.fromtimestamp(latest_buy['time'] / 1000).isoformat()
+                            except Exception:
+                                pass
+                        
+                        sold_position = {
+                            'symbol': symbol,
+                            'quantity': sell_quantity,
+                            'sell_price': sell_price,
+                            'buy_price': buy_price,
+                            'buy_time': buy_time,
+                            'buy_rsi': buy_rsi,
+                            'sell_time': datetime.now().isoformat()
+                        }
+                        
+                        # Calculate profit if we have buy price
+                        if buy_price:
+                            sold_position['profit'] = (sell_price - buy_price) * sell_quantity
+                            sold_position['profit_pct'] = ((sell_price - buy_price) / buy_price) * 100
+                        else:
+                            sold_position['profit'] = None
+                            sold_position['profit_pct'] = None
+                        
+                        sold_positions.append(sold_position)
+                        
+                        print(f"   ✅ Successfully closed {symbol} at {sell_price:.8f}")
+                    else:
+                        print(f"   ❌ Failed to sell {symbol} - See error messages above for details")
+                        
+                except Exception as e:
+                    print(f"   ❌ Exception while selling {symbol}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
+            
+            # Clear active trade if we sold it
+            if self.active_trade and any(pos['symbol'] == self.active_trade['symbol'] for pos in sold_positions):
+                self.active_trade = None
+                print("✅ Active trade cleared")
+            
+            return sold_positions
+            
+        except BinanceAPIException as e:
+            if e.code == -2015:
+                print(f"❌ API permissions insufficient to close positions (code -2015)")
+                print(f"   Enable 'Spot & Margin Trading' permission to close positions")
+            else:
+                print(f"❌ Binance API Error while closing positions: {e} (Code: {e.code})")
+            return sold_positions
+        except Exception as e:
+            print(f"❌ Error closing positions: {e}")
+            import traceback
+            traceback.print_exc()
+            return sold_positions
     
     def update_coins_data(self, symbols: List[str], emit_updates: bool = True):
         """Update RSI data for all coins, including 24h change percentage"""
@@ -1367,112 +1801,176 @@ def get_active_trade():
 
 @app.route('/api/trading/stop', methods=['POST'])
 def stop_trading():
-    """Stop trading - sell any active trade first"""
+    """Stop trading - close all active positions by selling them immediately (no RSI check)"""
     global trading_enabled, active_trade, trade_history, coins_data, bot
     
-    # Check if there's an active trade
-    current_active_trade = None
-    if bot and bot.active_trade:
-        current_active_trade = bot.active_trade
-    elif active_trade:
-        current_active_trade = active_trade
+    print("🛑 Stop trading requested by admin")
+    print("   Closing all active positions immediately (regardless of RSI)...")
     
-    # Store symbol before selling (for response message)
-    sold_symbol = None
+    sold_symbols = []
+    sold_positions = []
+    error_occurred = False
+    error_message = None
     
-    # If there's an active trade, sell it first
-    if current_active_trade:
-        sold_symbol = current_active_trade['symbol']
-        symbol = current_active_trade['symbol']
-        quantity = current_active_trade['quantity']
-        
-        print(f"🛑 Stop trading requested - Active trade found: {symbol}")
-        print(f"   Selling {symbol} before disabling trading...")
-        
+    # First, try to close all positions from Binance account directly
+    if bot and bot.client:
         try:
-            # Place sell order
-            order = bot.sell_order(symbol, quantity) if bot else None
-            
-            if order:
-                # Get sell price from order or current price
-                sell_price = None
-                if order.get('fills'):
-                    sell_price = float(order['fills'][0].get('price', 0))
-                else:
-                    # Get current price from coins_data or API
-                    if symbol in coins_data:
-                        sell_price = coins_data[symbol]['price']
-                    else:
-                        if bot:
-                            sell_price = bot.get_current_price(symbol)
-                
-                if sell_price:
-                    sell_quantity = float(order.get('executedQty', quantity))
+            sold_positions = bot.close_all_positions()
+            if sold_positions:
+                for pos in sold_positions:
+                    sold_symbols.append(pos['symbol'])
                     
-                    trade_result = {
-                        'symbol': symbol,
-                        'buy_price': current_active_trade['buy_price'],
-                        'sell_price': sell_price,
-                        'quantity': sell_quantity,
-                        'buy_rsi': current_active_trade.get('buy_rsi', None),
-                        'sell_rsi': None,  # RSI not checked on manual stop
-                        'buy_time': current_active_trade['buy_time'],
-                        'sell_time': datetime.now().isoformat(),
-                        'profit': (sell_price - current_active_trade['buy_price']) * sell_quantity,
-                        'profit_pct': ((sell_price - current_active_trade['buy_price']) / current_active_trade['buy_price']) * 100
-                    }
-                    
-                    trade_history.append(trade_result)
-                    
-                    # Clear active trade
-                    if bot:
-                        bot.active_trade = None
-                    active_trade = None
-                    
-                    # Emit trade update
-                    socketio.emit('trade_update', trade_result)
-                    socketio.emit('active_trade_update', {'active_trade': None})
-                    # Update totals from Binance data and emit
-                    total_trades = len(trade_history)
-                    total_profit = sum(float(t.get('profit', 0)) for t in trade_history)
-                    socketio.emit('trade_history_update', {
-                        'trades': trade_history[-100:] if len(trade_history) > 100 else trade_history,
-                        'total_trades': total_trades,
-                        'total_profit': round(total_profit, 2),
-                        'source': 'binance_api'
-                    })
-                    
-                    print(f"✅ Sold {symbol} at {sell_price:.4f} | Profit: {trade_result['profit']:.2f} USDT ({trade_result['profit_pct']:.2f}%)")
-                else:
-                    print(f"⚠️  Sold {symbol} but couldn't determine sell price")
-            else:
-                print(f"❌ Failed to sell {symbol} - Order may have failed")
-                return jsonify({'success': False, 'message': f'Failed to sell active trade: {symbol}'}), 500
-                
+                    # Add to trade history if we have complete trade data
+                    if pos.get('buy_price') and pos.get('profit') is not None:
+                        trade_result = {
+                            'symbol': pos['symbol'],
+                            'buy_price': pos['buy_price'],
+                            'sell_price': pos['sell_price'],
+                            'quantity': pos['quantity'],
+                            'buy_rsi': pos.get('buy_rsi'),
+                            'sell_rsi': None,  # RSI not checked on manual stop
+                            'buy_time': pos.get('buy_time'),
+                            'sell_time': pos['sell_time'],
+                            'profit': pos['profit'],
+                            'profit_pct': pos['profit_pct']
+                        }
+                        trade_history.append(trade_result)
+                        
+                        # Emit trade update
+                        socketio.emit('trade_update', trade_result)
+                        print(f"✅ Added {pos['symbol']} to trade history")
         except Exception as e:
-            print(f"❌ Error selling active trade: {e}")
+            error_occurred = True
+            error_message = str(e)
+            print(f"❌ Error closing positions from Binance: {e}")
             import traceback
             traceback.print_exc()
-            return jsonify({'success': False, 'message': f'Error selling active trade: {str(e)}'}), 500
+    
+    # After attempting to close positions, check if there are still active positions
+    remaining_active_trade = None
+    if bot and bot.client:
+        try:
+            # Check again for any remaining active positions (without selling)
+            remaining_positions = bot.check_active_positions()
+            if remaining_positions:
+                # There are still positions that couldn't be closed
+                remaining_symbols = [pos['symbol'] for pos in remaining_positions]
+                print(f"⚠️  Warning: Still have active positions after close attempt: {remaining_symbols}")
+                # Try to detect the active trade
+                remaining_active_trade = bot.detect_existing_positions()
+                if remaining_active_trade:
+                    bot.active_trade = remaining_active_trade
+                    active_trade = remaining_active_trade
+                else:
+                    # Create active trade from the first remaining position
+                    if remaining_positions:
+                        pos = remaining_positions[0]
+                        # Try to get buy price from trade history
+                        buy_price = pos['current_price']  # Fallback to current price
+                        buy_time = datetime.now().isoformat()
+                        try:
+                            trades = bot.client.get_my_trades(symbol=pos['symbol'], limit=50)
+                            if trades:
+                                buy_trades = [t for t in trades if t['isBuyer']]
+                                if buy_trades:
+                                    latest_buy = max(buy_trades, key=lambda x: x['time'])
+                                    buy_price = float(latest_buy['price'])
+                                    buy_time = datetime.fromtimestamp(latest_buy['time'] / 1000).isoformat()
+                        except Exception:
+                            pass
+                        
+                        remaining_active_trade = {
+                            'symbol': pos['symbol'],
+                            'buy_price': buy_price,
+                            'quantity': pos['quantity'],
+                            'buy_rsi': None,
+                            'buy_time': buy_time
+                        }
+                        bot.active_trade = remaining_active_trade
+                        active_trade = remaining_active_trade
+        except Exception as e:
+            print(f"⚠️  Error checking for remaining positions: {e}")
+            # If we can't check, try to detect from memory
+            if bot.active_trade:
+                remaining_active_trade = bot.active_trade
+    
+    # Only clear active_trade if we successfully sold all positions
+    if sold_symbols and not remaining_active_trade:
+        if bot and bot.active_trade:
+            symbol = bot.active_trade['symbol']
+            if symbol in sold_symbols:
+                bot.active_trade = None
+        if active_trade:
+            active_trade = None
+        # Emit active trade update to clear it in UI
+        socketio.emit('active_trade_update', {'active_trade': None})
+    elif remaining_active_trade:
+        # Still have active trade, emit it to UI
+        socketio.emit('active_trade_update', {'active_trade': remaining_active_trade})
+        print(f"⚠️  Active trade still exists: {remaining_active_trade.get('symbol')}")
+    
+    # Update trade history totals and emit
+    if sold_positions:
+        total_trades = len(trade_history)
+        total_profit = sum(float(t.get('profit', 0)) for t in trade_history)
+        socketio.emit('trade_history_update', {
+            'trades': trade_history[-100:] if len(trade_history) > 100 else trade_history,
+            'total_trades': total_trades,
+            'total_profit': round(total_profit, 2),
+            'source': 'manual_close'
+        })
     
     # Disable trading
     trading_enabled = False
     socketio.emit('trading_status_update', {'trading_enabled': False})
     
-    if sold_symbol:
-        print("⛔ Trading disabled - Active trade was sold")
+    # Prepare response
+    if error_occurred and not sold_symbols:
+        # Error occurred and no positions were sold
+        print(f"❌ Trading stop failed - Could not close positions: {error_message}")
+        return jsonify({
+            'success': False, 
+            'message': f'Failed to close positions: {error_message}',
+            'trade_sold': False,
+            'positions_still_active': remaining_active_trade is not None,
+            'symbols': [],
+            'error': error_message
+        }), 500
+    elif sold_symbols and not remaining_active_trade:
+        # Successfully closed all positions
+        symbols_str = ', '.join(sold_symbols)
+        print(f"⛔ Trading disabled - Closed {len(sold_symbols)} position(s): {symbols_str}")
         return jsonify({
             'success': True, 
-            'message': f'Trading stopped - Sold {sold_symbol}',
+            'message': f'Trading stopped - Closed {len(sold_symbols)} position(s): {symbols_str}',
             'trade_sold': True,
-            'symbol': sold_symbol
+            'positions_still_active': False,
+            'symbols': sold_symbols,
+            'positions_closed': len(sold_symbols)
         })
+    elif remaining_active_trade:
+        # Some positions were closed but others remain
+        symbols_str = ', '.join(sold_symbols) if sold_symbols else 'None'
+        remaining_symbol = remaining_active_trade.get('symbol', 'Unknown')
+        print(f"⚠️  Trading disabled - Closed {len(sold_symbols)} position(s), but {remaining_symbol} still active")
+        return jsonify({
+            'success': False,
+            'message': f'Closed {len(sold_symbols)} position(s), but {remaining_symbol} is still active. Please try again.',
+            'trade_sold': len(sold_symbols) > 0,
+            'positions_still_active': True,
+            'remaining_symbol': remaining_symbol,
+            'symbols': sold_symbols,
+            'positions_closed': len(sold_symbols)
+        }), 500
     else:
-        print("⛔ Trading disabled - Bot will only monitor signals")
+        # No positions to close
+        print("⛔ Trading disabled - No active positions found to close")
         return jsonify({
             'success': True, 
-            'message': 'Trading stopped',
-            'trade_sold': False
+            'message': 'Trading stopped - No active positions to close',
+            'trade_sold': False,
+            'positions_still_active': False,
+            'symbols': []
         })
 
 @socketio.on('connect')
