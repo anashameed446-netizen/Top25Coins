@@ -799,9 +799,33 @@
         let activeTrade = null;
         let tradeHistory = [];
 
-        // Update coins table with smooth updates
+        // Optimized coin data cache for incremental updates
+        let coinDataCache = new Map();
+        let updatePending = false;
+        let lastUpdateTime = 0;
+        const MIN_UPDATE_INTERVAL = 50; // Minimum 50ms between DOM updates (throttle for smooth updates)
+
+        // Update coins table with optimized incremental updates
         function updateCoinsTable(coins) {
             coinsData = coins;
+            const now = Date.now();
+            
+            // Throttle updates to reduce DOM manipulation
+            if (updatePending || (now - lastUpdateTime) < MIN_UPDATE_INTERVAL) {
+                updatePending = true;
+                requestAnimationFrame(() => {
+                    updatePending = false;
+                    performCoinsTableUpdate(coins);
+                });
+                return;
+            }
+            
+            performCoinsTableUpdate(coins);
+            lastUpdateTime = now;
+        }
+
+        // Perform the actual table update with incremental DOM changes
+        function performCoinsTableUpdate(coins) {
             const container = document.getElementById('coins-container');
             
             if (coins.length === 0) {
@@ -810,62 +834,171 @@
             }
 
             // Sort by RSI descending
-            const sortedCoins = [...coins].sort((a, b) => b.rsi - a.rsi);
+            const sortedCoins = [...coins].sort((a, b) => (b.rsi || 0) - (a.rsi || 0));
 
             // Check if table already exists
             let table = container.querySelector('table.coins-table');
             let tbody = table ? table.querySelector('tbody') : null;
 
             if (!table || !tbody) {
-                // First time - create full table
-                let html = `
-                    <table class="coins-table">
-                        <thead>
-                            <tr>
-                                <th>Symbol</th>
-                                <th>Price</th>
-                                <th>24h Change</th>
-                                <th>RSI</th>
-                                <th>Status</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                `;
-
-                sortedCoins.forEach(coin => {
-                    html += createCoinRow(coin);
-                });
-
-                html += '</tbody></table>';
-                container.innerHTML = html;
-            } else {
-                // Update existing table - preserve scroll position and update rows smoothly
-                const scrollTop = container.scrollTop;
+                // First time - create full table using DocumentFragment for performance
+                const fragment = document.createDocumentFragment();
+                table = document.createElement('table');
+                table.className = 'coins-table';
                 
-                // Create a map of existing rows by symbol
-                const existingRows = {};
+                const thead = document.createElement('thead');
+                thead.innerHTML = `
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Price</th>
+                        <th>24h Change</th>
+                        <th>RSI</th>
+                        <th>Status</th>
+                    </tr>
+                `;
+                table.appendChild(thead);
+                
+                tbody = document.createElement('tbody');
+                sortedCoins.forEach(coin => {
+                    tbody.appendChild(createCoinRowElement(coin));
+                });
+                table.appendChild(tbody);
+                
+                fragment.appendChild(table);
+                container.innerHTML = '';
+                container.appendChild(fragment);
+            } else {
+                // Incremental update - only update changed rows and reorder if needed
+                const scrollTop = container.scrollTop;
+                const existingRows = new Map();
+                
+                // Build map of existing rows
                 Array.from(tbody.querySelectorAll('tr')).forEach(row => {
-                    const symbol = row.querySelector('td:first-child strong')?.textContent;
+                    const symbol = row.getAttribute('data-symbol');
                     if (symbol) {
-                        existingRows[symbol] = row;
+                        existingRows.set(symbol, row);
                     }
                 });
 
-                // Clear tbody and rebuild in correct order (maintains smooth updates)
-                tbody.innerHTML = '';
-                
-                // Add rows in sorted order
+                const processedSymbols = new Set();
+                const newRows = [];
+                const rowsToRemove = [];
+
+                // First pass: Update existing rows and identify new/removed coins
                 sortedCoins.forEach((coin) => {
-                    const newRow = createCoinRowElement(coin);
-                    tbody.appendChild(newRow);
+                    processedSymbols.add(coin.symbol);
+                    const existingRow = existingRows.get(coin.symbol);
+                    
+                    if (existingRow) {
+                        // Update existing row in place (no DOM recreation)
+                        updateCoinRow(existingRow, coin);
+                    } else {
+                        // New coin - will create row
+                        newRows.push(coin);
+                    }
                 });
+
+                // Identify rows to remove
+                existingRows.forEach((row, symbol) => {
+                    if (!processedSymbols.has(symbol)) {
+                        rowsToRemove.push(row);
+                    }
+                });
+
+                // Remove obsolete rows
+                rowsToRemove.forEach(row => row.remove());
+
+                // Add new rows at appropriate positions
+                if (newRows.length > 0) {
+                    const currentRows = Array.from(tbody.querySelectorAll('tr'));
+                    newRows.forEach(coin => {
+                        // Find insertion point based on RSI (sorted order)
+                        let insertBefore = null;
+                        for (let i = 0; i < currentRows.length; i++) {
+                            const rowRsi = parseFloat(currentRows[i].querySelector('td:nth-child(4)')?.textContent || 0);
+                            if (coin.rsi > rowRsi) {
+                                insertBefore = currentRows[i];
+                                break;
+                            }
+                        }
+                        const newRow = createCoinRowElement(coin);
+                        if (insertBefore) {
+                            tbody.insertBefore(newRow, insertBefore);
+                        } else {
+                            tbody.appendChild(newRow);
+                        }
+                    });
+                }
+
+                // Reorder only if positions changed significantly (minimize expensive DOM operations)
+                // Check if first 3 and last 3 symbols are in correct order
+                const currentRows = Array.from(tbody.querySelectorAll('tr'));
+                if (currentRows.length > 0 && sortedCoins.length > 0) {
+                    const firstCurrent = currentRows[0]?.getAttribute('data-symbol');
+                    const firstDesired = sortedCoins[0]?.symbol;
+                    const needsReorder = firstCurrent !== firstDesired;
+                    
+                    // Only reorder if top coin changed (most common case) or if we added/removed rows
+                    if (needsReorder || newRows.length > 0 || rowsToRemove.length > 0) {
+                        // Use fragment for efficient reordering
+                        const fragment = document.createDocumentFragment();
+                        sortedCoins.forEach(coin => {
+                            const row = tbody.querySelector(`tr[data-symbol="${coin.symbol}"]`);
+                            if (row) {
+                                fragment.appendChild(row);
+                            }
+                        });
+                        tbody.innerHTML = '';
+                        tbody.appendChild(fragment);
+                    }
+                }
 
                 // Restore scroll position
                 container.scrollTop = scrollTop;
             }
 
-            // Update stats
+            // Update stats (lightweight operation)
             document.getElementById('total-coins').textContent = coins.length;
+        }
+
+        // Update a single row in place (much faster than recreating)
+        function updateCoinRow(row, coin) {
+            const cells = row.querySelectorAll('td');
+            if (cells.length >= 5) {
+                const rsiClass = coin.rsi >= 70 ? 'rsi-buy' : coin.rsi <= 30 ? 'rsi-sell' : 'rsi-neutral';
+                const status = coin.rsi >= 70 ? '🟢 BUY SIGNAL' : coin.rsi <= 30 ? '🔴 OVERSOLD' : '⚪ Monitoring';
+                
+                // Only update if values changed (avoid unnecessary DOM updates)
+                const priceCell = cells[1];
+                const newPrice = `$${coin.price.toLocaleString('en-US', {minimumFractionDigits: 4, maximumFractionDigits: 4})}`;
+                if (priceCell.textContent !== newPrice) {
+                    priceCell.textContent = newPrice;
+                }
+                
+                // Update 24h change
+                const changeCell = cells[2];
+                let change24hHtml = 'N/A';
+                if (coin.change_24h !== null && coin.change_24h !== undefined) {
+                    const changeClass = coin.change_24h >= 0 ? 'positive-change' : 'negative-change';
+                    const changeSign = coin.change_24h >= 0 ? '+' : '';
+                    change24hHtml = `<span class="${changeClass}">${changeSign}${coin.change_24h.toFixed(2)}%</span>`;
+                }
+                changeCell.innerHTML = change24hHtml;
+                
+                // Update RSI
+                const rsiCell = cells[3];
+                const newRsi = coin.rsi.toFixed(2);
+                if (rsiCell.textContent !== newRsi || rsiCell.className !== rsiClass) {
+                    rsiCell.textContent = newRsi;
+                    rsiCell.className = rsiClass;
+                }
+                
+                // Update status
+                const statusCell = cells[4];
+                if (statusCell.textContent !== status) {
+                    statusCell.textContent = status;
+                }
+            }
         }
 
         // Helper function to create coin row HTML
@@ -919,16 +1052,22 @@
             return tr;
         }
 
-        // Update stop trading button state based on active trade
+        // Update stop trading button state
+        // Enabled when: trading is enabled OR there's an active trade
+        // Disabled only when: trading is disabled AND no active trade
         function updateStopTradingButton() {
             const stopBtn = document.getElementById('stop-trading');
-            // Enable stop trading button ONLY if there is an active trade
-            if (activeTrade) {
+            // Enable if trading is enabled OR there's an active trade
+            if (tradingEnabled || activeTrade) {
                 stopBtn.disabled = false;
-                stopBtn.title = 'Click to stop trading and close active position';
+                if (activeTrade) {
+                    stopBtn.title = 'Click to stop trading and close active position';
+                } else {
+                    stopBtn.title = 'Click to stop trading';
+                }
             } else {
                 stopBtn.disabled = true;
-                stopBtn.title = 'No active trade - Stop trading is disabled';
+                stopBtn.title = 'Trading is disabled and no active trade - Stop trading is disabled';
             }
         }
 
@@ -1049,7 +1188,8 @@
 
         socket.on('active_trade_update', (data) => {
             updateActiveTrade(data.active_trade);
-            // Button state is updated inside updateActiveTrade
+            // Update button state when active trade changes
+            updateStopTradingButton();
         });
 
         socket.on('trade_update', (trade) => {
@@ -1075,6 +1215,8 @@
 
         socket.on('trading_status_update', (data) => {
             updateTradingStatus(data.trading_enabled);
+            // Update button state when trading status changes
+            updateStopTradingButton();
         });
 
         // Admin Panel Functionality
@@ -1315,6 +1457,8 @@
                 
                 if (result.success) {
                     updateTradingStatus(true);
+                    // Update stop trading button when trading starts (enables the button)
+                    updateStopTradingButton();
                     const messageEl = document.getElementById('config-message');
                     messageEl.textContent = result.message;
                     messageEl.className = 'message success';
@@ -1427,11 +1571,15 @@
         });
 
         // Load config, trade history, stats, RSI settings, and active trade from Binance API on page load
-        loadConfig();
+        loadConfig().then(() => {
+            // After config loads, load active trade and update button state
+            loadActiveTrade().then(() => {
+                updateStopTradingButton();
+            });
+        });
         loadTradeHistory();
         loadTradeStats();
         loadRSISettings();
-        loadActiveTrade();
     </script>
 </body>
 </html>

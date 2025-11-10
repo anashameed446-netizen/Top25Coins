@@ -11,6 +11,9 @@ from flask_socketio import SocketIO, emit
 import json
 from dotenv import load_dotenv
 import configparser
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # Load environment variables from .env file
 load_dotenv()
@@ -98,11 +101,55 @@ class BinanceRSIBot:
         
         # Try to initialize client, handle geographic restrictions gracefully
         try:
+            # Configure client with optimized settings for server environments
+            client_config = {
+                'requests_params': {
+                    'timeout': 10,  # 10 second timeout
+                }
+            }
+            
             if testnet:
-                self.client = Client(api_key, api_secret, testnet=True)
+                self.client = Client(api_key, api_secret, testnet=True, **client_config)
             else:
-                self.client = Client(api_key, api_secret)
-            print("✅ Binance API client initialized successfully")
+                self.client = Client(api_key, api_secret, **client_config)
+            
+            # Optimize session for connection pooling and retries
+            # python-binance uses requests.Session internally
+            try:
+                # Access the session through the client's internal request method
+                if hasattr(self.client, 'session') and self.client.session:
+                    # Configure retry strategy
+                    retry_strategy = Retry(
+                        total=3,
+                        backoff_factor=0.3,
+                        status_forcelist=[429, 500, 502, 503, 504],
+                    )
+                    adapter = HTTPAdapter(
+                        max_retries=retry_strategy,
+                        pool_connections=10,  # Connection pool size
+                        pool_maxsize=20,  # Max connections in pool
+                    )
+                    self.client.session.mount("http://", adapter)
+                    self.client.session.mount("https://", adapter)
+                elif hasattr(self.client, '_client') and hasattr(self.client._client, 'session'):
+                    # Alternative access path for some binance client versions
+                    retry_strategy = Retry(
+                        total=3,
+                        backoff_factor=0.3,
+                        status_forcelist=[429, 500, 502, 503, 504],
+                    )
+                    adapter = HTTPAdapter(
+                        max_retries=retry_strategy,
+                        pool_connections=10,
+                        pool_maxsize=20,
+                    )
+                    self.client._client.session.mount("http://", adapter)
+                    self.client._client.session.mount("https://", adapter)
+            except Exception as e:
+                # If we can't optimize session, continue anyway
+                print(f"⚠️  Could not optimize session for connection pooling: {e}")
+            
+            print("✅ Binance API client initialized successfully (optimized for server)")
         except BinanceAPIException as e:
             if e.code == 0 and ("restricted location" in str(e).lower() or "eligibility" in str(e).lower()):
                 self.geo_blocked = True
@@ -133,6 +180,11 @@ class BinanceRSIBot:
         self.previous_rsi = {}  # {symbol: previous_rsi_value}
         # Track API permission status
         self.has_account_permissions = None  # None = unknown, True = has permissions, False = no permissions
+        # Cache for klines data to reduce API calls (candles change hourly, not every second)
+        self.klines_cache = {}  # {symbol: {'data': prices, 'timestamp': time}}
+        self.klines_cache_ttl = 60  # Cache klines for 60 seconds (candles are hourly, but we want fresher data)
+        # Thread pool for parallel API calls
+        self.executor = ThreadPoolExecutor(max_workers=15)  # Parallel workers for API calls (optimized for server)
         
         # Test API permissions only if client is available
         if self.client:
@@ -308,16 +360,34 @@ class BinanceRSIBot:
             # Silently handle errors to avoid console spam
             return None
     
-    def get_klines(self, symbol: str, interval: str = '1h', limit: int = 100) -> List[float]:
-        """Get klines (candlestick data) for RSI calculation"""
+    def get_klines(self, symbol: str, interval: str = '1h', limit: int = 100, use_cache: bool = True) -> List[float]:
+        """Get klines (candlestick data) for RSI calculation with caching"""
         if not self.client:
             return []
+        
+        # Check cache first (klines are hourly, so we can cache them)
+        cache_key = f"{symbol}_{interval}_{limit}"
+        if use_cache and cache_key in self.klines_cache:
+            cached = self.klines_cache[cache_key]
+            if time.time() - cached['timestamp'] < self.klines_cache_ttl:
+                return cached['data']
+        
         try:
             klines = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
             prices = [float(k[4]) for k in klines]  # Close prices
+            
+            # Cache the result
+            if use_cache:
+                self.klines_cache[cache_key] = {
+                    'data': prices,
+                    'timestamp': time.time()
+                }
+            
             return prices
         except Exception as e:
-            print(f"Error getting klines for {symbol}: {e}")
+            # Return cached data if available even on error
+            if use_cache and cache_key in self.klines_cache:
+                return self.klines_cache[cache_key]['data']
             return []
     
     def get_current_price(self, symbol: str, silent: bool = False) -> Optional[float]:
@@ -1216,31 +1286,80 @@ class BinanceRSIBot:
             traceback.print_exc()
             return sold_positions
     
+    def _fetch_klines_parallel(self, symbol: str) -> tuple:
+        """Helper method to fetch klines for a symbol (for parallel execution)"""
+        try:
+            prices = self.get_klines(symbol, interval='1h', limit=100, use_cache=True)
+            return symbol, prices, None
+        except Exception as e:
+            return symbol, [], str(e)
+    
     def update_coins_data(self, symbols: List[str], emit_updates: bool = True):
-        """Update RSI data for all coins, including 24h change percentage"""
+        """Update RSI data for all coins, including 24h change percentage (optimized with parallel requests)"""
         global coins_data
         
-        # Get ticker data once for all symbols to get 24h change
+        if not self.client:
+            return
+        
+        start_time = time.time()
+        
+        # Get ticker data once for all symbols (contains prices and 24h change)
+        # This is a single API call that gets ALL symbol data
         try:
             ticker_data_map = {}
             ticker = self.client.get_ticker()
             for ticker_info in ticker:
-                ticker_data_map[ticker_info['symbol']] = ticker_info
+                symbol = ticker_info['symbol']
+                # Extract price (can be 'price' or 'lastPrice')
+                price = ticker_info.get('lastPrice') or ticker_info.get('price', '0')
+                ticker_data_map[symbol] = {
+                    'price': float(price) if price else 0,
+                    'change_24h': float(ticker_info.get('priceChangePercent', 0))
+                }
         except Exception as e:
+            print(f"⚠️  Error fetching ticker data: {e}")
             ticker_data_map = {}
         
+        # Fetch klines in parallel for all symbols (much faster than sequential)
+        klines_data = {}
+        futures = {}
+        
+        # Submit all klines requests in parallel
+        for symbol in symbols:
+            future = self.executor.submit(self._fetch_klines_parallel, symbol)
+            futures[future] = symbol
+        
+        # Collect results as they complete
+        for future in as_completed(futures):
+            symbol, prices, error = future.result()
+            if error:
+                # Skip errors silently, but keep trying
+                continue
+            if prices:
+                klines_data[symbol] = prices
+        
+        # Process all symbols with the fetched data
         updated_count = 0
         for symbol in symbols:
             try:
-                prices = self.get_klines(symbol, interval='1h', limit=100)
+                # Get prices from parallel fetch (or cache)
+                prices = klines_data.get(symbol)
+                if not prices:
+                    # Fallback to direct call if parallel fetch failed
+                    prices = self.get_klines(symbol, interval='1h', limit=100, use_cache=True)
+                
                 if len(prices) >= self.rsi_period + 1:
+                    # Calculate RSI
                     rsi = self.calculate_rsi(prices, self.rsi_period)
-                    current_price = self.get_current_price(symbol)
                     
-                    # Get 24h change from ticker data
-                    change_24h = None
-                    if symbol in ticker_data_map:
-                        change_24h = float(ticker_data_map[symbol].get('priceChangePercent', 0))
+                    # Get price and 24h change from ticker data (already fetched, no extra API call)
+                    ticker_info = ticker_data_map.get(symbol, {})
+                    current_price = ticker_info.get('price')
+                    change_24h = ticker_info.get('change_24h')
+                    
+                    # Fallback to API call only if ticker data doesn't have price
+                    if current_price is None or current_price == 0:
+                        current_price = self.get_current_price(symbol, silent=True)
                     
                     if rsi is not None and current_price is not None:
                         # Store previous RSI before updating
@@ -1256,20 +1375,22 @@ class BinanceRSIBot:
                             'timestamp': datetime.now().isoformat()
                         }
                         updated_count += 1
-                        
-                        # Send incremental updates to web interface for faster response
-                        if emit_updates and updated_count % 5 == 0:
-                            socketio.emit('coins_update', {'coins': list(coins_data.values())})
             except Exception as e:
                 # Silently skip errors to avoid spam, but log important ones
                 if 'rate limit' in str(e).lower():
-                    print(f"⚠️ Rate limit hit, slowing down...")
-                pass
+                    print(f"⚠️ Rate limit hit for {symbol}, slowing down...")
+                continue
         
-        # Send final update with all coins
-        if emit_updates and updated_count > 0:
-            socketio.emit('coins_update', {'coins': list(coins_data.values())})
-            print(f"📊 Updated {updated_count}/{len(symbols)} coins data")
+        # Emit update with all coins (optimized for server performance)
+        if emit_updates:
+            # Only emit if we have updated data
+            if updated_count > 0:
+                # Emit update (socketio handles this efficiently)
+                socketio.emit('coins_update', {'coins': list(coins_data.values())})
+        
+        elapsed = time.time() - start_time
+        if elapsed > 2.0:  # Only log if it took longer than expected
+            print(f"📊 Updated {updated_count}/{len(symbols)} coins data in {elapsed:.2f}s")
     
     def check_trading_signals(self):
         """Check for buy/sell signals"""
@@ -1563,6 +1684,15 @@ class BinanceRSIBot:
             except Exception as e:
                 print(f"Error in bot loop: {e}")
                 time.sleep(self.update_interval)
+        
+        # Cleanup when bot stops
+        print("🛑 Bot stopping, cleaning up resources...")
+        if hasattr(self, 'executor'):
+            try:
+                self.executor.shutdown(wait=False)  # Don't wait, just shutdown gracefully
+                print("✅ Thread pool executor shut down")
+            except Exception as e:
+                print(f"⚠️  Error shutting down executor: {e}")
 
 # Initialize bot
 bot = None
