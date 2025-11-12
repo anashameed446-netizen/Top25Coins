@@ -104,7 +104,7 @@ class BinanceRSIBot:
             # Configure client with optimized settings for server environments
             client_config = {
                 'requests_params': {
-                    'timeout': 10,  # 10 second timeout
+                    'timeout': 5,  # 5 second timeout for faster response
                 }
             }
             
@@ -180,12 +180,12 @@ class BinanceRSIBot:
         self.previous_rsi = {}  # {symbol: previous_rsi_value}
         # Track API permission status
         self.has_account_permissions = None  # None = unknown, True = has permissions, False = no permissions
-        # Cache for klines data to reduce API calls (using 1-hour candles for RSI calculation, like TradingView 1h interval)
+        # Cache for klines data to reduce API calls (candles change every 5 minutes)
         self.klines_cache = {}  # {symbol: {'data': prices, 'timestamp': time}}
-        self.klines_cache_ttl = 300  # Cache klines for 5 minutes (1h candles are stable, we update with live price for real-time RSI)
+        self.klines_cache_ttl = 600  # Cache klines for 10 minutes (candles are 5-minute intervals)
         # Track last klines fetch time to avoid fetching every second
         self.last_klines_fetch = 0
-        self.klines_fetch_interval = 300  # Fetch klines every 5 minutes (1h candles change hourly, but we use live price for updates)
+        self.klines_fetch_interval = 30  # Fetch klines every 30 seconds for near real-time RSI updates
         # Cache for exchange info (rarely changes, cache for 1 hour)
         self.exchange_info_cache = None
         self.exchange_info_cache_timestamp = 0
@@ -195,7 +195,7 @@ class BinanceRSIBot:
         self.ticker_cache_timestamp = 0
         self.ticker_cache_ttl = 5  # Cache for 5 seconds
         # Thread pool for parallel API calls
-        self.executor = ThreadPoolExecutor(max_workers=10)  # Reduced workers to avoid rate limits
+        self.executor = ThreadPoolExecutor(max_workers=15)  # Parallel workers for API calls (optimized for server)
         
         # Test API permissions only if client is available
         if self.client:
@@ -265,6 +265,8 @@ class BinanceRSIBot:
             return []
         
         try:
+            print("📡 Fetching active USDT trading pairs from Binance...")
+            
             # Get exchange info with caching (rarely changes, cache for 1 hour)
             current_time = time.time()
             if (self.exchange_info_cache is None or 
@@ -272,8 +274,10 @@ class BinanceRSIBot:
                 exchange_info = self.client.get_exchange_info()
                 self.exchange_info_cache = exchange_info
                 self.exchange_info_cache_timestamp = current_time
+                print("📡 Fetched fresh exchange info from Binance")
             else:
                 exchange_info = self.exchange_info_cache
+                print(f"📡 Using cached exchange info (age: {int(current_time - self.exchange_info_cache_timestamp)}s)")
             
             active_usdt_symbols = set()
             for symbol_info in exchange_info['symbols']:
@@ -281,13 +285,14 @@ class BinanceRSIBot:
                 if symbol_info['status'] == 'TRADING' and symbol_info['quoteAsset'] == 'USDT':
                     active_usdt_symbols.add(symbol_info['symbol'])
             
+            print(f"📊 Found {len(active_usdt_symbols)} active USDT trading pairs")
+            
             # Get ticker data with caching (changes frequently, cache for 5 seconds)
-            ticker_current_time = time.time()
             if (self.ticker_cache is None or 
-                ticker_current_time - self.ticker_cache_timestamp > self.ticker_cache_ttl):
+                current_time - self.ticker_cache_timestamp > self.ticker_cache_ttl):
                 ticker = self.client.get_ticker()
                 self.ticker_cache = ticker
-                self.ticker_cache_timestamp = ticker_current_time
+                self.ticker_cache_timestamp = current_time
             else:
                 ticker = self.ticker_cache
             
@@ -314,8 +319,14 @@ class BinanceRSIBot:
             # Sort by 24-hour price change percentage (highest first)
             sorted_coins = sorted(coins_with_change, key=lambda x: x['change_percent'], reverse=True)
             
-            # Return top coins
+            # Return top coins with detailed logging
             result = [coin['symbol'] for coin in sorted_coins[:limit]]
+            if result:
+                print(f"✅ Top {len(result)} USDT-paired gainers by 24h change (Binance market):")
+                for idx, coin_data in enumerate(sorted_coins[:limit], 1):
+                    print(f"   {idx}. {coin_data['symbol']}: +{coin_data['change_percent']:.2f}%")
+            else:
+                print("⚠️  No USDT gainers found among active trading pairs")
             return result
         except Exception as e:
             print(f"❌ Error getting top coins: {e}")
@@ -581,8 +592,15 @@ class BinanceRSIBot:
             all_trades = []
             symbols_traded = set()
             
-            # Get exchange info to find all USDT pairs
-            exchange_info = self.client.get_exchange_info()
+            # Get exchange info to find all USDT pairs (with caching)
+            current_time = time.time()
+            if (self.exchange_info_cache is None or 
+                current_time - self.exchange_info_cache_timestamp > self.exchange_info_cache_ttl):
+                exchange_info = self.client.get_exchange_info()
+                self.exchange_info_cache = exchange_info
+                self.exchange_info_cache_timestamp = current_time
+            else:
+                exchange_info = self.exchange_info_cache
             usdt_symbols = set()
             for symbol_info in exchange_info['symbols']:
                 if symbol_info['status'] == 'TRADING' and symbol_info['quoteAsset'] == 'USDT':
@@ -739,8 +757,8 @@ class BinanceRSIBot:
             
             print(f"💰 Spot wallet USDT balance: {usdt_balance:.2f} USDT")
             
-            # Calculate quantity based on available USDT (use 99.5% to account for trading fees ~0.1% and price fluctuations)
-            available_usdt = usdt_balance * 0.995
+            # Calculate quantity based on available USDT (use 99% to account for trading fees ~0.1% and price fluctuations)
+            available_usdt = usdt_balance * 0.99
             current_price = self.get_current_price(symbol)
             
             if current_price is None:
@@ -750,7 +768,7 @@ class BinanceRSIBot:
             # Calculate quantity (with precision)
             quantity = available_usdt / current_price
             
-            print(f"💵 Using {available_usdt:.2f} USDT (99.5% of balance) to buy {symbol}")
+            print(f"💵 Using {available_usdt:.2f} USDT (99% of balance) to buy {symbol}")
             
             # Get symbol info for precision
             exchange_info = self.client.get_symbol_info(symbol)
@@ -812,7 +830,7 @@ class BinanceRSIBot:
                 print(f"   1. Trading fees (~0.1%) need to be covered")
                 print(f"   2. Price may have moved slightly (slippage)")
                 print(f"   3. Minimum order size requirements")
-                print(f"   💡 The bot uses 99.5% of your balance to account for fees.")
+                print(f"   💡 The bot uses 99% of your balance to account for fees.")
                 print(f"   💰 Current balance: {usdt_balance:.2f} USDT")
                 print(f"   💡 Try adding more USDT to your spot wallet or the bot will retry on next signal")
             else:
@@ -1052,9 +1070,16 @@ class BinanceRSIBot:
             # List of stablecoins to exclude (these are just balances, not trades)
             stablecoins = {'FDUSD', 'USDC', 'BUSD', 'TUSD', 'DAI', 'PAXG', 'USDP', 'USDD', 'PYUSD'}
             
-            # Get exchange info to verify valid symbols
+            # Get exchange info to verify valid symbols (with caching)
             try:
-                exchange_info = self.client.get_exchange_info()
+                current_time = time.time()
+                if (self.exchange_info_cache is None or 
+                    current_time - self.exchange_info_cache_timestamp > self.exchange_info_cache_ttl):
+                    exchange_info = self.client.get_exchange_info()
+                    self.exchange_info_cache = exchange_info
+                    self.exchange_info_cache_timestamp = current_time
+                else:
+                    exchange_info = self.exchange_info_cache
                 valid_symbols = {s['symbol'] for s in exchange_info['symbols'] if s['status'] == 'TRADING'}
             except Exception:
                 valid_symbols = set()  # If we can't get exchange info, we'll verify by trying to get price
@@ -1305,24 +1330,14 @@ class BinanceRSIBot:
     def _fetch_klines_parallel(self, symbol: str) -> tuple:
         """Helper method to fetch klines for a symbol (for parallel execution)"""
         try:
-            # Force fresh fetch (don't use cache in parallel fetch, we check cache separately)
-            klines = self.client.get_klines(symbol=symbol, interval='1h', limit=100)
-            prices = [float(k[4]) for k in klines]  # Close prices
-            
-            # Update cache
-            cache_key = f"{symbol}_1h_100"
-            self.klines_cache[cache_key] = {
-                'data': prices,
-                'timestamp': time.time()
-            }
-            
+            prices = self.get_klines(symbol, interval='5m', limit=100, use_cache=True)
             return symbol, prices, None
         except Exception as e:
             # Return cached data if available on error
-            cache_key = f"{symbol}_1h_100"
+            cache_key = f"{symbol}_5m_100"
             if cache_key in self.klines_cache:
                 cached = self.klines_cache[cache_key]
-                if time.time() - cached['timestamp'] < 3600:  # Use cache up to 1 hour old
+                if time.time() - cached['timestamp'] < 600:  # Use cache up to 10 minutes old
                     return symbol, cached['data'], None
             return symbol, [], str(e)
     
@@ -1352,110 +1367,78 @@ class BinanceRSIBot:
                 symbol = ticker_info['symbol']
                 # Extract price (can be 'price' or 'lastPrice')
                 price = ticker_info.get('lastPrice') or ticker_info.get('price', '0')
-                # Extract 24h change percentage
-                change_24h = ticker_info.get('priceChangePercent', 0)
-                try:
-                    change_24h = float(change_24h) if change_24h else 0
-                except (ValueError, TypeError):
-                    change_24h = 0
-                
                 ticker_data_map[symbol] = {
                     'price': float(price) if price else 0,
-                    'change_24h': change_24h
+                    'change_24h': float(ticker_info.get('priceChangePercent', 0))
                 }
         except Exception as e:
             print(f"⚠️  Error fetching ticker data: {e}")
-            import traceback
-            traceback.print_exc()
             ticker_data_map = {}
-            # If error, try to use cached ticker as fallback
-            if hasattr(self, 'ticker_cache') and self.ticker_cache:
-                try:
-                    for ticker_info in self.ticker_cache:
-                        symbol = ticker_info['symbol']
-                        price = ticker_info.get('lastPrice') or ticker_info.get('price', '0')
-                        change_24h = ticker_info.get('priceChangePercent', 0)
-                        try:
-                            change_24h = float(change_24h) if change_24h else 0
-                        except (ValueError, TypeError):
-                            change_24h = 0
-                        ticker_data_map[symbol] = {
-                            'price': float(price) if price else 0,
-                            'change_24h': change_24h
-                        }
-                except Exception as e2:
-                    print(f"⚠️  Error using cached ticker: {e2}")
         
-        # Use cached klines data immediately for fast updates
-        # Only fetch fresh klines if cache is stale (1-hour candles, fetch every 60 seconds)
+        # Only fetch klines if enough time has passed (klines are 5-minute candles, fetch every 30 seconds for real-time RSI)
         current_time = time.time()
         should_fetch_klines = (current_time - self.last_klines_fetch) >= self.klines_fetch_interval
         
-        # First, try to get klines from cache for all symbols (fast, no API calls)
+        # Fetch klines in parallel only when needed (with timeout handling)
         klines_data = {}
-        for symbol in symbols:
-            cache_key = f"{symbol}_1h_100"
-            if cache_key in self.klines_cache:
-                cached = self.klines_cache[cache_key]
-                # Use cache if less than cache TTL old (1h candles are stable)
-                if current_time - cached['timestamp'] < self.klines_cache_ttl:
-                    klines_data[symbol] = cached['data']
+        futures = {}
         
-        # Only fetch fresh klines for symbols missing from cache (if enough time passed)
-        missing_symbols = [s for s in symbols if s not in klines_data]
-        if should_fetch_klines and missing_symbols:
-            # Fetch in smaller batches to avoid rate limits (5 symbols at a time)
-            batch_size = 5
-            for i in range(0, len(missing_symbols), batch_size):
-                batch = missing_symbols[i:i + batch_size]
-                futures = {}
-                
-                # Submit batch requests
-                for symbol in batch:
-                    future = self.executor.submit(self._fetch_klines_parallel, symbol)
-                    futures[future] = symbol
-                
-                # Collect results with shorter timeout (3 seconds per batch)
-                try:
-                    for future in as_completed(futures, timeout=3):
-                        symbol, prices, error = future.result()
-                        if not error and prices:
-                            klines_data[symbol] = prices
-                except FuturesTimeoutError:
-                    # Process completed futures, ignore incomplete ones
-                    for future in list(futures.keys()):
-                        if future.done():
-                            try:
-                                symbol, prices, error = future.result(timeout=0.1)
-                                if not error and prices:
-                                    klines_data[symbol] = prices
-                            except:
-                                pass
-                
-                # Small delay between batches to avoid rate limits
-                if i + batch_size < len(missing_symbols):
-                    time.sleep(0.2)
+        if should_fetch_klines:
+            # Submit all klines requests in parallel
+            for symbol in symbols:
+                future = self.executor.submit(self._fetch_klines_parallel, symbol)
+                futures[future] = symbol
+            
+            # Collect results as they complete with timeout (don't wait forever)
+            try:
+                for future in as_completed(futures, timeout=10):  # 10 second max wait for all requests
+                    symbol, prices, error = future.result()
+                    if error:
+                        # Skip errors silently, but keep trying
+                        continue
+                    if prices:
+                        klines_data[symbol] = prices
+            except FuturesTimeoutError:
+                print(f"⚠️ Klines fetch timeout - using available data and cache")
+                # Process any completed futures
+                for future in list(futures.keys()):
+                    if future.done():
+                        try:
+                            symbol, prices, error = future.result(timeout=0.1)
+                            if prices:
+                                klines_data[symbol] = prices
+                        except:
+                            pass
             
             # Update last fetch time
-            if missing_symbols:
+            if klines_data or len(futures) > 0:
                 self.last_klines_fetch = current_time
+                # Log only significant updates
+                if len(klines_data) < len(symbols) * 0.8:  # Less than 80% success
+                    print(f"⚠️ Fetched klines for {len(klines_data)}/{len(symbols)} symbols")
+        else:
+            # Use cached data - no API calls needed
+            pass
         
-        # Process all symbols with the fetched/cached data
+        # Process all symbols with the fetched data
         updated_count = 0
         for symbol in symbols:
             try:
-                # Get prices from cache or fetched data
+                # Get prices from parallel fetch (or cache)
                 prices = klines_data.get(symbol)
                 if not prices:
-                    # Try to get from cache one more time (might have been updated)
-                    prices = self.get_klines(symbol, interval='1h', limit=100, use_cache=True)
-                    # If still no prices and we have existing data, keep existing (don't break the update)
+                    # Fallback to cache first, then direct call
+                    prices = self.get_klines(symbol, interval='5m', limit=100, use_cache=True)
+                    # If still no prices and we have cached data in coins_data, keep existing
                     if not prices and symbol in coins_data:
-                        # Keep existing data if API fails - this prevents data loss
+                        # Keep existing data if API fails
                         updated_count += 1
                         continue
                 
                 if len(prices) >= self.rsi_period + 1:
+                    # Calculate RSI
+                    rsi = self.calculate_rsi(prices, self.rsi_period)
+                    
                     # Get price and 24h change from ticker data (already fetched, no extra API call)
                     ticker_info = ticker_data_map.get(symbol, {})
                     current_price = ticker_info.get('price')
@@ -1464,17 +1447,6 @@ class BinanceRSIBot:
                     # Fallback to API call only if ticker data doesn't have price
                     if current_price is None or current_price == 0:
                         current_price = self.get_current_price(symbol, silent=True)
-                    
-                    # Calculate "live" RSI by replacing last candle price with current price for real-time updates
-                    # This makes RSI update continuously (like TradingView), not just when a new 1-hour candle closes
-                    # RSI is calculated from 1h candles (TradingView 1h interval), but updates with live price
-                    live_prices = prices.copy()
-                    if current_price and current_price > 0:
-                        # Replace last candle price with current live price for live RSI calculation
-                        live_prices[-1] = current_price
-                    
-                    # Calculate RSI using live prices (based on 1h candles, like TradingView 1h interval)
-                    rsi = self.calculate_rsi(live_prices, self.rsi_period)
                     
                     if rsi is not None and current_price is not None:
                         # Store previous RSI before updating
@@ -1503,10 +1475,9 @@ class BinanceRSIBot:
                 # Emit update (socketio handles this efficiently)
                 socketio.emit('coins_update', {'coins': list(coins_data.values())})
         
-        # Only log if update took unusually long
         elapsed = time.time() - start_time
-        if elapsed > 5.0:  # Only log if it took longer than 5 seconds
-            print(f"⚠️ Slow update: {updated_count}/{len(symbols)} coins in {elapsed:.2f}s")
+        if elapsed > 2.0:  # Only log if it took longer than expected
+            print(f"📊 Updated {updated_count}/{len(symbols)} coins data in {elapsed:.2f}s")
     
     def check_trading_signals(self):
         """Check for buy/sell signals"""
@@ -1703,13 +1674,16 @@ class BinanceRSIBot:
             socketio.emit('active_trade_update', {'active_trade': detected_trade})
         
         # Get top coins initially (top 25 gainers by 24-hour price change)
+        print("🔄 Finding top 25 coins with positive 24h price change (Binance market)...")
         symbols = self.get_top_coins(25)
         
         # If we have an active trade, make sure its symbol is in the monitoring list
         if detected_trade and detected_trade['symbol'] not in symbols:
             symbols.append(detected_trade['symbol'])
+            print(f"➕ Added active trade symbol {detected_trade['symbol']} to monitoring list")
         
         if not symbols:
+            print("⚠️  No USDT gainers found, using top 25 USDT pairs by volume as fallback...")
             # Fallback: use top 25 USDT pairs by volume if no gainers found
             try:
                 # Get exchange info with caching
@@ -1738,16 +1712,23 @@ class BinanceRSIBot:
                 active_usdt_pairs = [t for t in ticker if t['symbol'] in active_usdt_symbols]
                 sorted_by_volume = sorted(active_usdt_pairs, key=lambda x: float(x.get('quoteVolume', 0)), reverse=True)
                 symbols = [t['symbol'] for t in sorted_by_volume[:25]]
+                print(f"✅ Using top {len(symbols)} USDT pairs by volume as fallback")
             except Exception as e:
                 print(f"❌ Error in fallback: {e}")
                 symbols = []
         
+        print(f"📊 Monitoring {len(symbols)} coins: {', '.join(symbols[:5])}...")
+        
         # Start monitoring immediately with initial coins
+        print("🔄 Calculating RSI for selected coins...")
         self.update_coins_data(symbols)
         
         # Emit initial data to web interface
         if coins_data:
             socketio.emit('coins_update', {'coins': list(coins_data.values())})
+            print(f"✅ Sending {len(coins_data)} coins data to web interface")
+        else:
+            print("⚠️  No coin data available yet")
         
         update_count = 0
         top_coins_refresh_interval = 30  # Refresh top coins list every 30 updates (30 sec if update_interval is 1 sec) - faster refresh to catch new gainers
@@ -1762,6 +1743,7 @@ class BinanceRSIBot:
                         # If we have an active trade, make sure its symbol stays in monitoring
                         if self.active_trade and self.active_trade['symbol'] not in symbols:
                             symbols.append(self.active_trade['symbol'])
+                        print(f"🔄 Refreshed top 25 USDT gainers (24h change): {', '.join(symbols[:5])}...")
                         # Clear old data for coins no longer in top 25 (but keep active trade symbol)
                         coins_data = {k: v for k, v in coins_data.items() if k in symbols}
                 
@@ -2253,5 +2235,6 @@ if __name__ == '__main__':
     print("📡 Web interface available at http://localhost:5000")
     start_bot()
     socketio.run(app, host='0.0.0.0', port=5000, debug=False)
+
 
 
