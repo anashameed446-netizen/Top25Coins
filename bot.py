@@ -1549,7 +1549,7 @@ class BinanceRSIBot:
             # Only emit if we have updated data
             if updated_count > 0:
                 # Emit update immediately (broadcast to all clients)
-                socketio.emit('coins_update', {'coins': list(coins_data.values())}, broadcast=True, namespace='/')
+                socketio.emit('coins_update', {'coins': list(coins_data.values())}, namespace='/')
         
         # Only log if update took unusually long
         elapsed = time.time() - start_time
@@ -1624,8 +1624,8 @@ class BinanceRSIBot:
                         active_trade = None
                         
                         # Emit trade update immediately (broadcast to all clients)
-                        socketio.emit('trade_update', trade_result, broadcast=True, namespace='/')
-                        socketio.emit('active_trade_update', {'active_trade': None}, broadcast=True, namespace='/')
+                        socketio.emit('trade_update', trade_result, namespace='/')
+                        socketio.emit('active_trade_update', {'active_trade': None}, namespace='/')
                         print(f"✅ Trade closed: {symbol} | Profit: {trade_result['profit']:.2f} USDT ({trade_result['profit_pct']:.2f}%)")
                         print(f"📊 Active trade cleared - Bot will now check for new buy signals")
         else:
@@ -1691,9 +1691,9 @@ class BinanceRSIBot:
                     active_trade = self.active_trade
                     
                     # Emit active trade update to web interface immediately (broadcast to all clients)
-                    socketio.emit('active_trade_update', {'active_trade': self.active_trade}, broadcast=True, namespace='/')
+                    socketio.emit('active_trade_update', {'active_trade': self.active_trade}, namespace='/')
                     # Also force immediate coins update to refresh display
-                    socketio.emit('coins_update', {'coins': list(coins_data.values())}, broadcast=True, namespace='/')
+                    socketio.emit('coins_update', {'coins': list(coins_data.values())}, namespace='/')
                     print(f"✅ Trade started: {symbol} | Buy Price: {buy_price:.4f} | Quantity: {buy_quantity:.4f} | RSI: {rsi:.2f}")
                     print(f"📊 Active trade created - No new trades will start until this trade closes")
                 else:
@@ -1705,7 +1705,7 @@ class BinanceRSIBot:
                         'rsi': rsi,
                         'error': 'Insufficient balance or order error',
                         'timestamp': datetime.now().isoformat()
-                    }, broadcast=True, namespace='/')
+                    }, namespace='/')
     
     def run(self):
         """Main bot loop"""
@@ -1741,7 +1741,7 @@ class BinanceRSIBot:
                 'total_trades': total_trades,
                 'total_profit': round(total_profit, 2),
                 'source': 'binance_api'
-            }, broadcast=True, namespace='/')
+            }, namespace='/')
         
         # Check for existing positions from Binance account
         detected_trade = self.detect_existing_positions()
@@ -1750,7 +1750,7 @@ class BinanceRSIBot:
             active_trade = detected_trade
             print(f"🔄 Restored active trade from account: {detected_trade['symbol']}")
             # Emit to web interface
-            socketio.emit('active_trade_update', {'active_trade': detected_trade}, broadcast=True, namespace='/')
+            socketio.emit('active_trade_update', {'active_trade': detected_trade}, namespace='/')
         
         # Get top coins initially (top 25 gainers by 24-hour price change)
         symbols = self.get_top_coins(25)
@@ -1797,7 +1797,7 @@ class BinanceRSIBot:
         
         # Emit initial data to web interface
         if coins_data:
-            socketio.emit('coins_update', {'coins': list(coins_data.values())}, broadcast=True, namespace='/')
+            socketio.emit('coins_update', {'coins': list(coins_data.values())}, namespace='/')
         
         update_count = 0
         top_coins_refresh_interval = 30  # Refresh top coins list every 30 updates (30 sec if update_interval is 1 sec) - faster refresh to catch new gainers
@@ -2069,7 +2069,7 @@ def start_trading():
         return jsonify({'success': False, 'message': 'Please set API credentials first'}), 400
     
     trading_enabled = True
-    socketio.emit('trading_status_update', {'trading_enabled': True}, broadcast=True, namespace='/')
+    socketio.emit('trading_status_update', {'trading_enabled': True}, namespace='/')
     print("✅ Trading enabled - Bot will now execute buy/sell orders")
     return jsonify({'success': True, 'message': 'Trading started'})
 
@@ -2092,7 +2092,7 @@ def get_active_trade():
                     bot.active_trade = detected_trade
                     active_trade = detected_trade
                     # Emit to web interface
-                    socketio.emit('active_trade_update', {'active_trade': detected_trade}, broadcast=True, namespace='/')
+                    socketio.emit('active_trade_update', {'active_trade': detected_trade}, namespace='/')
                     return jsonify({'active_trade': detected_trade})
             except Exception as e:
                 print(f"Error detecting active trade: {e}")
@@ -2203,10 +2203,10 @@ def stop_trading():
         if active_trade:
             active_trade = None
         # Emit active trade update to clear it in UI
-        socketio.emit('active_trade_update', {'active_trade': None}, broadcast=True, namespace='/')
+        socketio.emit('active_trade_update', {'active_trade': None}, namespace='/')
     elif remaining_active_trade:
         # Still have active trade, emit it to UI
-        socketio.emit('active_trade_update', {'active_trade': remaining_active_trade}, broadcast=True, namespace='/')
+        socketio.emit('active_trade_update', {'active_trade': remaining_active_trade}, namespace='/')
         print(f"⚠️  Active trade still exists: {remaining_active_trade.get('symbol')}")
     
     # Update trade history totals and emit
@@ -2218,11 +2218,11 @@ def stop_trading():
             'total_trades': total_trades,
             'total_profit': round(total_profit, 2),
             'source': 'manual_close'
-        }, broadcast=True, namespace='/')
+        }, namespace='/')
     
     # Disable trading
     trading_enabled = False
-    socketio.emit('trading_status_update', {'trading_enabled': False}, broadcast=True, namespace='/')
+    socketio.emit('trading_status_update', {'trading_enabled': False}, namespace='/')
     
     # Prepare response
     if error_occurred and not sold_symbols:
