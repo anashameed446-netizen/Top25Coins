@@ -793,7 +793,20 @@
     </div>
 
     <script>
-        const socket = io();
+        // Configure socket with reconnection and better connection options
+        // Use polling first for better firewall/proxy compatibility, then upgrade to websocket
+        const socket = io({
+            reconnection: true,
+            reconnectionDelay: 1000,
+            reconnectionDelayMax: 5000,
+            reconnectionAttempts: Infinity,
+            timeout: 20000,
+            transports: ['polling', 'websocket'], // Polling first for firewall compatibility
+            upgrade: true,
+            rememberUpgrade: false,
+            forceNew: false,
+            autoConnect: true
+        });
         
         let coinsData = [];
         let activeTrade = null;
@@ -1173,17 +1186,62 @@
         }
 
         // Socket event listeners
+        // Connection status tracking
+        let connectionStatus = 'disconnected';
+        function updateConnectionStatus(status, message) {
+            connectionStatus = status;
+            console.log(`Connection status: ${status} - ${message}`);
+        }
+        
         socket.on('connect', () => {
-            console.log('Connected to server');
+            const transport = socket.io.engine.transport.name;
+            console.log('Connected to server via', transport);
+            updateConnectionStatus('connected', `Connected via ${transport}`);
+        });
+        
+        socket.io.on('upgrade', () => {
+            console.log('Transport upgraded to', socket.io.engine.transport.name);
+        });
+        
+        socket.io.on('upgradeError', (error) => {
+            console.warn('Transport upgrade failed, staying on polling:', error);
+            // This is OK - polling works fine, just slower but more compatible
         });
 
         socket.on('disconnect', (reason) => {
             console.log('Disconnected from server:', reason);
-            // Only reconnect if it wasn't a manual disconnect
+            updateConnectionStatus('disconnected', `Disconnected: ${reason}`);
+            // SocketIO will automatically reconnect unless it's a manual disconnect
             if (reason === 'io server disconnect') {
-                // Server disconnected the socket, don't reconnect automatically
-                console.log('Server disconnected. Please refresh the page.');
+                // Server disconnected the socket - reconnect manually
+                console.log('Server disconnected. Attempting to reconnect...');
+                socket.connect();
+            } else if (reason === 'transport close') {
+                // Connection lost - will auto-reconnect
+                console.log('Connection lost. Reconnecting...');
+                updateConnectionStatus('reconnecting', 'Connection lost, reconnecting...');
+            } else if (reason === 'transport error') {
+                // Transport error - will auto-reconnect
+                console.log('Transport error. Reconnecting...');
+                updateConnectionStatus('reconnecting', 'Transport error, reconnecting...');
             }
+        });
+        
+        socket.on('reconnect', (attemptNumber) => {
+            console.log('Reconnected to server after', attemptNumber, 'attempts');
+            updateConnectionStatus('connected', `Reconnected after ${attemptNumber} attempts`);
+        });
+        
+        socket.on('reconnect_attempt', (attemptNumber) => {
+            console.log('Reconnection attempt', attemptNumber);
+        });
+        
+        socket.on('reconnect_error', (error) => {
+            console.error('Reconnection error:', error);
+        });
+        
+        socket.on('reconnect_failed', () => {
+            console.error('Reconnection failed. Please refresh the page.');
         });
 
         socket.on('connect_error', (error) => {
@@ -1204,6 +1262,7 @@
         });
 
         socket.on('active_trade_update', (data) => {
+            console.log('Active trade update received:', data);
             updateActiveTrade(data.active_trade);
             // Update button state when active trade changes
             updateStopTradingButton();
