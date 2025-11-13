@@ -1177,6 +1177,23 @@
             console.log('Connected to server');
         });
 
+        socket.on('disconnect', (reason) => {
+            console.log('Disconnected from server:', reason);
+            // Only reconnect if it wasn't a manual disconnect
+            if (reason === 'io server disconnect') {
+                // Server disconnected the socket, don't reconnect automatically
+                console.log('Server disconnected. Please refresh the page.');
+            }
+        });
+
+        socket.on('connect_error', (error) => {
+            console.error('Connection error:', error);
+        });
+
+        socket.on('error', (error) => {
+            console.error('Socket error:', error);
+        });
+
         socket.on('coins_update', (data) => {
             coinsData = data.coins;
             updateCoinsTable(data.coins);

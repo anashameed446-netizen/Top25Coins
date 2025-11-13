@@ -82,7 +82,7 @@ API_KEY, API_SECRET, TESTNET = load_config()
 # Initialize Flask app
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your-secret-key-here'
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", logger=False, engineio_logger=False, ping_timeout=60, ping_interval=25)
 
 # Global state
 coins_data = {}
@@ -2271,27 +2271,40 @@ def stop_trading():
 @socketio.on('connect')
 def handle_connect():
     """Handle client connection"""
-    global trade_history, bot
-    print('Client connected')
-    emit('coins_update', {'coins': list(coins_data.values())})
-    emit('active_trade_update', {'active_trade': active_trade})
-    # Calculate totals from Binance trade data
-    total_trades = len(trade_history)
-    total_profit = sum(float(trade.get('profit', 0)) for trade in trade_history)
-    # Send last 100 trades (or all if less than 100) with totals from Binance
-    trades_to_send = trade_history[-100:] if len(trade_history) > 100 else trade_history
-    emit('trade_history_update', {
-        'trades': trades_to_send,
-        'total_trades': total_trades,
-        'total_profit': round(total_profit, 2),
-        'source': 'binance_api'
-    })
-    emit('trading_status_update', {'trading_enabled': trading_enabled})
+    global trade_history, bot, coins_data, active_trade, trading_enabled
+    try:
+        print('Client connected')
+        # Send initial data
+        emit('coins_update', {'coins': list(coins_data.values())})
+        emit('active_trade_update', {'active_trade': active_trade})
+        # Calculate totals from Binance trade data
+        total_trades = len(trade_history)
+        total_profit = sum(float(trade.get('profit', 0)) for trade in trade_history)
+        # Send last 100 trades (or all if less than 100) with totals from Binance
+        trades_to_send = trade_history[-100:] if len(trade_history) > 100 else trade_history
+        emit('trade_history_update', {
+            'trades': trades_to_send,
+            'total_trades': total_trades,
+            'total_profit': round(total_profit, 2),
+            'source': 'binance_api'
+        })
+        emit('trading_status_update', {'trading_enabled': trading_enabled})
+    except Exception as e:
+        print(f'Error in handle_connect: {e}')
+        import traceback
+        traceback.print_exc()
 
 @socketio.on('disconnect')
 def handle_disconnect():
     """Handle client disconnection"""
     print('Client disconnected')
+
+@socketio.on_error_default
+def default_error_handler(e):
+    """Handle SocketIO errors"""
+    print(f'SocketIO error: {e}')
+    import traceback
+    traceback.print_exc()
 
 if __name__ == '__main__':
     print("🚀 Starting Binance RSI Bot...")
