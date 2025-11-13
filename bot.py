@@ -2315,6 +2315,6 @@ if __name__ == '__main__':
     print("🚀 Starting Binance RSI Bot...")
     print("📡 Web interface available at http://localhost:5000")
     start_bot()
-    socketio.run(app, host='0.0.0.0', port=5000, debug=False)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)
 
 
