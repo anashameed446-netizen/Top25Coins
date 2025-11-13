@@ -6,6 +6,7 @@ from typing import Dict, Optional, List
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 import pandas as pd
+import numpy as np
 from flask import Flask, render_template, request, jsonify, session
 from flask_socketio import SocketIO, emit
 import json
@@ -352,17 +353,18 @@ class BinanceRSIBot:
             gain = delta.where(delta > 0, 0.0)  # Set negative changes to 0
             loss = -delta.where(delta < 0, 0.0)  # Set positive changes to 0, make negative positive
             
-            # Step 3: Calculate average gain and average loss over the period
-            avg_gain = gain.rolling(window=period).mean()
-            avg_loss = loss.rolling(window=period).mean()
+            # Step 3: Wilder's smoothing (exponential moving average with alpha = 1/period)
+            avg_gain = gain.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+            avg_loss = loss.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
             
             # Step 4: Calculate RS (Relative Strength)
-            # Avoid division by zero - if avg_loss is 0, all prices went up, RSI = 100
-            avg_loss_safe = avg_loss.replace(0, 0.0001)  # Replace 0 with small value
+            avg_loss_safe = avg_loss.replace(0, np.nan)
             rs = avg_gain / avg_loss_safe
             
             # Step 5: Calculate RSI
             rsi = 100 - (100 / (1 + rs))
+            # Handle cases where avg_loss is zero (RSI should be 100)
+            rsi = rsi.fillna(100.0)
             
             # Get the last (most recent) RSI value
             rsi_value = rsi.iloc[-1]
