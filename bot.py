@@ -14,6 +14,7 @@ import configparser
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import requests
 
 # Load environment variables from .env file
 load_dotenv()
@@ -739,8 +740,8 @@ class BinanceRSIBot:
             
             print(f"💰 Spot wallet USDT balance: {usdt_balance:.2f} USDT")
             
-            # Calculate quantity based on available USDT (use 99.5% to account for trading fees ~0.1% and price fluctuations)
-            available_usdt = usdt_balance * 0.995
+            # Calculate quantity based on available USDT (use 99% to account for trading fees ~0.1% and price fluctuations)
+            available_usdt = usdt_balance * 0.99
             current_price = self.get_current_price(symbol)
             
             if current_price is None:
@@ -750,23 +751,38 @@ class BinanceRSIBot:
             # Calculate quantity (with precision)
             quantity = available_usdt / current_price
             
-            print(f"💵 Using {available_usdt:.2f} USDT (99.5% of balance) to buy {symbol}")
+            print(f"💵 Using {available_usdt:.2f} USDT (99% of balance) to buy {symbol}")
             
             # Get symbol info for precision
             exchange_info = self.client.get_symbol_info(symbol)
             if not exchange_info:
                 return None
             
-            # Get quantity precision
+            # Get quantity precision and step size
+            step_size = None
             quantity_precision = None
             for filter_item in exchange_info['filters']:
                 if filter_item['filterType'] == 'LOT_SIZE':
                     step_size = float(filter_item['stepSize'])
-                    quantity_precision = len(str(step_size).split('.')[-1].rstrip('0'))
+                    # Calculate precision from stepSize (count decimal places)
+                    # Handle scientific notation and trailing zeros
+                    if step_size >= 1:
+                        quantity_precision = 0
+                    else:
+                        step_str = f"{step_size:.10f}".rstrip('0').rstrip('.')
+                        if '.' in step_str:
+                            quantity_precision = len(step_str.split('.')[1])
+                        else:
+                            quantity_precision = 0
                     break
             
-            if quantity_precision:
-                quantity = round(quantity, quantity_precision)
+            if step_size and step_size > 0:
+                # Truncate quantity to be a multiple of stepSize (floor division)
+                quantity = (quantity // step_size) * step_size
+                # Format to exact precision to avoid floating point issues
+                if quantity_precision is not None:
+                    # Format as string then convert back to float to ensure exact precision
+                    quantity = float(f"{quantity:.{quantity_precision}f}")
             
             if quantity <= 0:
                 print(f"❌ Calculated quantity is too small: {quantity}")
@@ -812,7 +828,7 @@ class BinanceRSIBot:
                 print(f"   1. Trading fees (~0.1%) need to be covered")
                 print(f"   2. Price may have moved slightly (slippage)")
                 print(f"   3. Minimum order size requirements")
-                print(f"   💡 The bot uses 99.5% of your balance to account for fees.")
+                print(f"   💡 The bot uses 99% of your balance to account for fees.")
                 print(f"   💰 Current balance: {usdt_balance:.2f} USDT")
                 print(f"   💡 Try adding more USDT to your spot wallet or the bot will retry on next signal")
             else:
@@ -1343,9 +1359,33 @@ class BinanceRSIBot:
             # Use cached ticker if available and fresh (cache for 5 seconds)
             if (self.ticker_cache is None or 
                 current_time - self.ticker_cache_timestamp > self.ticker_cache_ttl):
-                ticker = self.client.get_ticker()
-                self.ticker_cache = ticker
-                self.ticker_cache_timestamp = current_time
+                # Retry logic for get_ticker() with exponential backoff
+                ticker = None
+                max_retries = 3
+                retry_delay = 1  # Start with 1 second
+                for attempt in range(max_retries):
+                    try:
+                        ticker = self.client.get_ticker()
+                        self.ticker_cache = ticker
+                        self.ticker_cache_timestamp = current_time
+                        break  # Success, exit retry loop
+                    except (ConnectionError, TimeoutError, requests.exceptions.ConnectionError, 
+                            requests.exceptions.Timeout, requests.exceptions.ReadTimeout, Exception) as e:
+                        if attempt < max_retries - 1:
+                            print(f"⚠️  Ticker fetch attempt {attempt + 1}/{max_retries} failed: {type(e).__name__}. Retrying in {retry_delay}s...")
+                            time.sleep(retry_delay)
+                            retry_delay *= 2  # Exponential backoff: 1s, 2s, 4s
+                        else:
+                            # Last attempt failed, raise the exception
+                            raise
+                
+                if ticker is None:
+                    # If all retries failed, use cached data if available
+                    if hasattr(self, 'ticker_cache') and self.ticker_cache:
+                        print("⚠️  Using cached ticker data due to fetch failure")
+                        ticker = self.ticker_cache
+                    else:
+                        raise Exception("Failed to fetch ticker data after retries and no cache available")
             else:
                 ticker = self.ticker_cache
             for ticker_info in ticker:
@@ -1364,9 +1404,14 @@ class BinanceRSIBot:
                     'change_24h': change_24h
                 }
         except Exception as e:
-            print(f"⚠️  Error fetching ticker data: {e}")
-            import traceback
-            traceback.print_exc()
+            # Only print full traceback for non-timeout errors
+            if isinstance(e, (requests.exceptions.ConnectionError, requests.exceptions.Timeout, 
+                            requests.exceptions.ReadTimeout, TimeoutError)):
+                print(f"⚠️  Error fetching ticker data: {type(e).__name__} - {e}")
+            else:
+                print(f"⚠️  Error fetching ticker data: {e}")
+                import traceback
+                traceback.print_exc()
             ticker_data_map = {}
             # If error, try to use cached ticker as fallback
             if hasattr(self, 'ticker_cache') and self.ticker_cache:
