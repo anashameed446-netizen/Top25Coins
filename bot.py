@@ -49,7 +49,7 @@ def save_config(api_key, api_secret, testnet=False, rsi_buy=None, rsi_sell=None,
             'api_secret': api_secret,
             'testnet': str(testnet)
         }
-        # Add RSI settings if provided
+        # Add RSI settings if provided, otherwise preserve existing values
         if rsi_buy is not None:
             rsi_config = {
                 'buy_rsi': str(rsi_buy),
@@ -57,7 +57,17 @@ def save_config(api_key, api_secret, testnet=False, rsi_buy=None, rsi_sell=None,
             }
             if take_profit_rsi is not None:
                 rsi_config['take_profit_rsi'] = str(take_profit_rsi)
+            else:
+                existing = load_rsi_config()
+                rsi_config['take_profit_rsi'] = str(existing.get('take_profit_rsi', 100.0))
             config['RSI'] = rsi_config
+        else:
+            existing = load_rsi_config()
+            config['RSI'] = {
+                'buy_rsi': str(existing['buy_rsi']),
+                'sell_rsi': str(existing['sell_rsi']),
+                'take_profit_rsi': str(existing.get('take_profit_rsi', 100.0))
+            }
         with open(config_file, 'w') as f:
             config.write(f)
         print(f"✅ Configuration saved to {config_file}")
@@ -1952,10 +1962,11 @@ class BinanceRSIBot:
 
 # Initialize bot
 bot = None
+bot_thread = None
 
 def start_bot():
     """Start the bot in a separate thread"""
-    global bot
+    global bot, bot_thread
     if API_KEY and API_SECRET:
         rsi_cfg = load_rsi_config()
         bot = BinanceRSIBot(API_KEY, API_SECRET, TESTNET, rsi_config=rsi_cfg)
@@ -1985,7 +1996,7 @@ def get_config():
 @app.route('/api/config', methods=['POST'])
 def update_config():
     """Update configuration"""
-    global API_KEY, API_SECRET, TESTNET, bot, bot_running
+    global API_KEY, API_SECRET, TESTNET, bot, bot_running, bot_thread
     
     data = request.json
     api_key = data.get('api_key', '').strip()
@@ -2007,10 +2018,13 @@ def update_config():
         # Stop existing bot if running
         if bot:
             print("🛑 Stopping existing bot to apply new API credentials...")
-            global bot_running
             bot_running = False
-            # Wait a moment for bot thread to stop
-            time.sleep(2)
+            if bot_thread and bot_thread.is_alive():
+                bot_thread.join(timeout=5)
+                if bot_thread.is_alive():
+                    print("⚠️  Previous bot thread is still running; forcing restart anyway.")
+            bot = None
+            bot_thread = None
             bot_running = True  # Reset for new bot instance
         
         # Reinitialize bot with new credentials
@@ -2044,7 +2058,7 @@ def get_trade_history():
         try:
             # Fetch fresh trade history from Binance
             binance_trades = bot.fetch_trade_history_from_binance(limit=1000)
-            if binance_trades:
+            if binance_trades and not trade_history:
                 trade_history = binance_trades
         except Exception as e:
             print(f"⚠️  Error fetching fresh trades from Binance: {e}")
