@@ -143,6 +143,48 @@ def save_trade_data():
         print(f"⚠️  Could not save trade data to {TRADE_DATA_FILE}: {e}")
 
 
+def _trade_key(trade: Dict) -> tuple:
+    """Create a hashable key for a trade entry"""
+    symbol = trade.get('symbol')
+    buy_time = trade.get('buy_time') or ''
+    sell_time = trade.get('sell_time') or ''
+    quantity = round(float(trade.get('quantity', 0) or 0), 8)
+    return (symbol, buy_time, sell_time, quantity)
+
+
+def merge_trade_histories(remote_trades: Optional[List[Dict]], local_trades: List[Dict]) -> List[Dict]:
+    """Merge remote Binance trades with locally stored trades, preserving RSI data from local store."""
+    remote_trades = remote_trades or []
+    local_map = {_trade_key(t): t for t in local_trades}
+    seen_keys = set()
+    merged = []
+
+    for trade in remote_trades:
+        key = _trade_key(trade)
+        local = local_map.get(key)
+        if local:
+            trade = {**trade}  # shallow copy
+            trade['buy_rsi'] = local.get('buy_rsi')
+            trade['sell_rsi'] = local.get('sell_rsi')
+            if not trade.get('buy_time') and local.get('buy_time'):
+                trade['buy_time'] = local['buy_time']
+            if not trade.get('sell_time') and local.get('sell_time'):
+                trade['sell_time'] = local['sell_time']
+        else:
+            trade = {**trade}
+            trade.setdefault('buy_rsi', None)
+            trade.setdefault('sell_rsi', None)
+        merged.append(trade)
+        seen_keys.add(key)
+
+    for key, local in local_map.items():
+        if key not in seen_keys:
+            merged.append(local.copy())
+
+    merged.sort(key=lambda t: t.get('sell_time') or t.get('buy_time') or '', reverse=True)
+    return merged
+
+
 # Load trade data at startup (before bot starts)
 load_trade_data()
 
@@ -1818,20 +1860,21 @@ class BinanceRSIBot:
         # Fetch trade history from Binance
         global trade_history
         binance_trades = self.fetch_trade_history_from_binance(limit=500)
-        if binance_trades and not trade_history:
-            trade_history = binance_trades
-            print(f"📜 Loaded {len(trade_history)} trades from Binance history")
-            # Calculate totals from Binance data
-            total_trades = len(trade_history)
-            total_profit = sum(float(trade.get('profit', 0)) for trade in trade_history)
-            # Emit to web interface (send last 100 trades with totals from Binance)
-            trades_to_emit = trade_history[-100:] if len(trade_history) > 100 else trade_history
-            socketio.emit('trade_history_update', {
-                'trades': trades_to_emit,
-                'total_trades': total_trades,
-                'total_profit': round(total_profit, 2),
-                'source': 'binance_api'
-            }, namespace='/')
+        combined_trades = merge_trade_histories(binance_trades, trade_history)
+        if not trade_history and binance_trades:
+            trade_history.extend([t for t in combined_trades if _trade_key(t) not in {_trade_key(ct) for ct in trade_history}])
+            save_trade_data()
+            print(f"📜 Loaded {len(combined_trades)} trades from Binance history")
+        # Emit combined view
+        total_trades = len(combined_trades)
+        total_profit = sum(float(trade.get('profit', 0) or 0) for trade in combined_trades)
+        trades_to_emit = combined_trades[:100]
+        socketio.emit('trade_history_update', {
+            'trades': trades_to_emit,
+            'total_trades': total_trades,
+            'total_profit': round(total_profit, 2),
+            'source': 'binance_api'
+        }, namespace='/')
         
         # Check for existing positions from Binance account only if none persisted locally
         detected_trade = self.active_trade
@@ -2054,21 +2097,18 @@ def get_trade_history():
     limit = request.args.get('limit', 100, type=int)
     
     # If bot is available, fetch fresh data from Binance
+    remote_trades = []
     if bot:
         try:
-            # Fetch fresh trade history from Binance
-            binance_trades = bot.fetch_trade_history_from_binance(limit=1000)
-            if binance_trades and not trade_history:
-                trade_history = binance_trades
+            remote_trades = bot.fetch_trade_history_from_binance(limit=max(limit * 2, 500))
         except Exception as e:
             print(f"⚠️  Error fetching fresh trades from Binance: {e}")
-            # Fall back to cached trade_history
     
-    # Calculate totals from trade_history (which comes from Binance)
-    total_trades = len(trade_history)
-    total_profit = sum(float(trade.get('profit', 0)) for trade in trade_history)
+    combined_trades = merge_trade_histories(remote_trades, trade_history)
+    total_trades = len(combined_trades)
+    total_profit = sum(float(trade.get('profit', 0) or 0) for trade in combined_trades)
     
-    trades_to_return = trade_history[-limit:] if len(trade_history) > limit else trade_history
+    trades_to_return = combined_trades[:limit]
     
     return jsonify({
         'trades': trades_to_return,
@@ -2116,6 +2156,8 @@ def set_rsi_settings():
     try:
         # Save to config file
         save_config(API_KEY, API_SECRET, TESTNET, buy_rsi, sell_rsi, take_profit_rsi)
+        # Persist to trade data file so UI refresh retains values
+        save_trade_data()
         
         # Update bot if it exists
         if bot:
