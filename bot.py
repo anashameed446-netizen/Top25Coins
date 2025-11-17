@@ -40,7 +40,7 @@ def load_config():
     
     return api_key, api_secret, testnet
 
-def save_config(api_key, api_secret, testnet=False, rsi_buy=None, rsi_sell=None):
+def save_config(api_key, api_secret, testnet=False, rsi_buy=None, rsi_sell=None, take_profit_rsi=None):
     """Save configuration to config.ini"""
     try:
         config = configparser.ConfigParser()
@@ -51,10 +51,13 @@ def save_config(api_key, api_secret, testnet=False, rsi_buy=None, rsi_sell=None)
         }
         # Add RSI settings if provided
         if rsi_buy is not None:
-            config['RSI'] = {
+            rsi_config = {
                 'buy_rsi': str(rsi_buy),
                 'sell_rsi': str(rsi_sell)
             }
+            if take_profit_rsi is not None:
+                rsi_config['take_profit_rsi'] = str(take_profit_rsi)
+            config['RSI'] = rsi_config
         with open(config_file, 'w') as f:
             config.write(f)
         print(f"✅ Configuration saved to {config_file}")
@@ -71,11 +74,13 @@ def load_rsi_config():
         if 'RSI' in config:
             return {
                 'buy_rsi': float(config['RSI'].get('buy_rsi', 70.0)),
-                'sell_rsi': float(config['RSI'].get('sell_rsi', 69.0))
+                'sell_rsi': float(config['RSI'].get('sell_rsi', 69.0)),
+                'take_profit_rsi': float(config['RSI'].get('take_profit_rsi', 100.0))  # Default to 100 (disabled)
             }
     return {
         'buy_rsi': 70.0,
-        'sell_rsi': 69.0
+        'sell_rsi': 69.0,
+        'take_profit_rsi': 100.0  # Default to 100 (disabled)
     }
 
 API_KEY, API_SECRET, TESTNET = load_config()
@@ -175,10 +180,12 @@ class BinanceRSIBot:
         if rsi_config:
             self.rsi_buy = float(rsi_config.get('buy_rsi', 70.0))
             self.rsi_sell = float(rsi_config.get('sell_rsi', 69.0))
+            self.take_profit_rsi = float(rsi_config.get('take_profit_rsi', 100.0))  # Default 100 = disabled
         else:
             rsi_cfg = load_rsi_config()
             self.rsi_buy = rsi_cfg['buy_rsi']
             self.rsi_sell = rsi_cfg['sell_rsi']
+            self.take_profit_rsi = rsi_cfg.get('take_profit_rsi', 100.0)  # Default 100 = disabled
         self.active_trade = None
         self.update_interval = 1  # seconds - near real-time updates (1 second refresh)
         # Track previous RSI values to detect crossing above buy threshold
@@ -209,11 +216,14 @@ class BinanceRSIBot:
             print("⚠️  Skipping API permission check - client not initialized")
             self.has_account_permissions = False
     
-    def update_rsi_settings(self, buy_rsi, sell_rsi):
+    def update_rsi_settings(self, buy_rsi, sell_rsi, take_profit_rsi=None):
         """Update RSI buy/sell thresholds"""
         self.rsi_buy = float(buy_rsi)
         self.rsi_sell = float(sell_rsi)
-        print(f"📊 RSI settings updated: Buy when RSI crosses above {self.rsi_buy}, Sell when RSI drops to {self.rsi_sell}")
+        if take_profit_rsi is not None:
+            self.take_profit_rsi = float(take_profit_rsi)
+        take_profit_str = f", Take Profit at RSI {self.take_profit_rsi}" if self.take_profit_rsi < 100 else ", Take Profit: Disabled"
+        print(f"📊 RSI settings updated: Buy when RSI crosses above {self.rsi_buy}, Sell when RSI drops to {self.rsi_sell}{take_profit_str}")
     
     def check_buy_condition(self, symbol: str, current_rsi: float) -> bool:
         """Check if RSI crosses above buy threshold (from below)"""
@@ -231,9 +241,17 @@ class BinanceRSIBot:
             return False
         return False
     
-    def check_sell_condition(self, rsi: float) -> bool:
-        """Check if RSI drops to sell threshold"""
-        return rsi <= self.rsi_sell
+    def check_sell_condition(self, rsi: float):
+        """Check if RSI meets sell condition (either drops to sell threshold or reaches take profit)
+        Returns: (should_sell: bool, reason: str)
+        """
+        # Check take profit condition (if enabled, i.e., < 100)
+        if self.take_profit_rsi < 100 and rsi >= self.take_profit_rsi:
+            return True, f"Take Profit reached at RSI {self.take_profit_rsi}"
+        # Check regular sell condition
+        if rsi <= self.rsi_sell:
+            return True, f"RSI dropped to {self.rsi_sell}"
+        return False, ""
     
     def check_api_permissions(self):
         """Check if API key has trading permissions"""
@@ -1570,8 +1588,9 @@ class BinanceRSIBot:
                 if symbol in coins_data:
                     rsi = coins_data[symbol]['rsi']
                     # Check if RSI meets sell condition
-                    if self.check_sell_condition(rsi):
-                        print(f"🔍 [MONITORING] SELL SIGNAL: {symbol} RSI {rsi:.2f} (dropped to {self.rsi_sell}) - Trading disabled")
+                    should_sell, reason = self.check_sell_condition(rsi)
+                    if should_sell:
+                        print(f"🔍 [MONITORING] SELL SIGNAL: {symbol} RSI {rsi:.2f} ({reason}) - Trading disabled")
             else:
                 for symbol, data in coins_data.items():
                     rsi = data['rsi']
@@ -1597,9 +1616,10 @@ class BinanceRSIBot:
             if symbol in coins_data and coins_data[symbol].get('rsi') is not None:
                 rsi = coins_data[symbol]['rsi']
                 
-                # Check if RSI meets sell condition
-                if self.check_sell_condition(rsi):
-                    print(f"🔄 RSI dropped to {self.rsi_sell} ({rsi:.2f}) for {symbol}, selling...")
+                # Check if RSI meets sell condition (either drops to sell threshold or reaches take profit)
+                should_sell, reason = self.check_sell_condition(rsi)
+                if should_sell:
+                    print(f"🔄 {reason} ({rsi:.2f}) for {symbol}, selling...")
                     
                     # Place sell order
                     order = self.sell_order(symbol, self.active_trade['quantity'])
@@ -1986,7 +2006,8 @@ def get_rsi_settings():
     if bot:
         return jsonify({
             'buy_rsi': bot.rsi_buy,
-            'sell_rsi': bot.rsi_sell
+            'sell_rsi': bot.rsi_sell,
+            'take_profit_rsi': getattr(bot, 'take_profit_rsi', 100.0)
         })
     else:
         rsi_cfg = load_rsi_config()
@@ -2000,27 +2021,35 @@ def set_rsi_settings():
     
     buy_rsi = float(data.get('buy_rsi', 70.0))
     sell_rsi = float(data.get('sell_rsi', 69.0))
+    take_profit_rsi = float(data.get('take_profit_rsi', 100.0))  # Default 100 = disabled
     
     # Validate values
     if buy_rsi < 0 or buy_rsi > 100:
         return jsonify({'success': False, 'message': 'Buy RSI must be between 0 and 100'}), 400
     if sell_rsi < 0 or sell_rsi > 100:
         return jsonify({'success': False, 'message': 'Sell RSI must be between 0 and 100'}), 400
+    if take_profit_rsi < 0 or take_profit_rsi > 100:
+        return jsonify({'success': False, 'message': 'Take Profit RSI must be between 0 and 100'}), 400
+    
+    # Validate take profit is above buy threshold if enabled
+    if take_profit_rsi < 100 and take_profit_rsi <= buy_rsi:
+        return jsonify({'success': False, 'message': 'Take Profit RSI must be greater than Buy RSI threshold'}), 400
     
     try:
         # Save to config file
-        save_config(API_KEY, API_SECRET, TESTNET, buy_rsi, sell_rsi)
+        save_config(API_KEY, API_SECRET, TESTNET, buy_rsi, sell_rsi, take_profit_rsi)
         
         # Update bot if it exists
         if bot:
-            bot.update_rsi_settings(buy_rsi, sell_rsi)
+            bot.update_rsi_settings(buy_rsi, sell_rsi, take_profit_rsi)
         
         return jsonify({
             'success': True,
             'message': 'RSI settings updated successfully',
             'settings': {
                 'buy_rsi': buy_rsi,
-                'sell_rsi': sell_rsi
+                'sell_rsi': sell_rsi,
+                'take_profit_rsi': take_profit_rsi
             }
         })
     except Exception as e:
