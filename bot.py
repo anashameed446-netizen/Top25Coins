@@ -100,6 +100,40 @@ trade_history = []
 bot_running = False
 trading_enabled = False  # Trading control flag
 
+# Trade data persistence
+TRADE_DATA_FILE = 'trade_data.json'
+
+
+def load_trade_data():
+    """Load trade history and active trade from disk"""
+    global trade_history, active_trade
+    if os.path.exists(TRADE_DATA_FILE):
+        try:
+            with open(TRADE_DATA_FILE, 'r') as f:
+                data = json.load(f)
+                trade_history = data.get('trade_history', [])
+                active_trade = data.get('active_trade')
+                print(f"📁 Loaded {len(trade_history)} trades from {TRADE_DATA_FILE}")
+        except Exception as e:
+            print(f"⚠️  Could not load trade data from {TRADE_DATA_FILE}: {e}")
+
+
+def save_trade_data():
+    """Persist trade history and active trade to disk"""
+    try:
+        data = {
+            'trade_history': trade_history,
+            'active_trade': active_trade
+        }
+        with open(TRADE_DATA_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"⚠️  Could not save trade data to {TRADE_DATA_FILE}: {e}")
+
+
+# Load trade data at startup (before bot starts)
+load_trade_data()
+
 class BinanceRSIBot:
     def __init__(self, api_key: str, api_secret: str, testnet: bool = False, rsi_config: dict = None):
         """Initialize Binance client"""
@@ -1325,6 +1359,7 @@ class BinanceRSIBot:
             if self.active_trade and any(pos['symbol'] == self.active_trade['symbol'] for pos in sold_positions):
                 self.active_trade = None
                 print("✅ Active trade cleared")
+                save_trade_data()
             
             return sold_positions
             
@@ -1644,6 +1679,7 @@ class BinanceRSIBot:
                         trade_history.append(trade_result)
                         self.active_trade = None
                         active_trade = None
+                        save_trade_data()
                         
                         # Emit trade update immediately (broadcast to all clients)
                         socketio.emit('trade_update', trade_result, namespace='/')
@@ -1711,6 +1747,7 @@ class BinanceRSIBot:
                         'buy_time': datetime.now().isoformat()
                     }
                     active_trade = self.active_trade
+                    save_trade_data()
                     
                     # Emit active trade update to web interface immediately (broadcast to all clients)
                     socketio.emit('active_trade_update', {'active_trade': self.active_trade}, namespace='/')
@@ -1750,7 +1787,7 @@ class BinanceRSIBot:
         # Fetch trade history from Binance
         global trade_history
         binance_trades = self.fetch_trade_history_from_binance(limit=500)
-        if binance_trades:
+        if binance_trades and not trade_history:
             trade_history = binance_trades
             print(f"📜 Loaded {len(trade_history)} trades from Binance history")
             # Calculate totals from Binance data
@@ -2166,6 +2203,7 @@ def stop_trading():
                             'profit_pct': pos['profit_pct']
                         }
                         trade_history.append(trade_result)
+                        save_trade_data()
                         
                         # Emit trade update
                         socketio.emit('trade_update', trade_result)
@@ -2235,10 +2273,12 @@ def stop_trading():
             active_trade = None
         # Emit active trade update to clear it in UI
         socketio.emit('active_trade_update', {'active_trade': None}, namespace='/')
+        save_trade_data()
     elif remaining_active_trade:
         # Still have active trade, emit it to UI
         socketio.emit('active_trade_update', {'active_trade': remaining_active_trade}, namespace='/')
         print(f"⚠️  Active trade still exists: {remaining_active_trade.get('symbol')}")
+        save_trade_data()
     
     # Update trade history totals and emit
     if sold_positions:
