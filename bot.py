@@ -102,6 +102,8 @@ trading_enabled = False  # Trading control flag
 
 # Trade data persistence
 TRADE_DATA_FILE = 'trade_data.json'
+IGNORED_SYMBOLS = {'AEURUSDT', 'EURIUSDT'}
+IGNORED_ASSETS = {'AEUR', 'EURI'}
 
 
 def load_trade_data():
@@ -221,6 +223,8 @@ class BinanceRSIBot:
             self.rsi_sell = rsi_cfg['sell_rsi']
             self.take_profit_rsi = rsi_cfg.get('take_profit_rsi', 100.0)  # Default 100 = disabled
         self.active_trade = None
+        if active_trade:
+            self.active_trade = active_trade.copy()
         self.update_interval = 1  # seconds - near real-time updates (1 second refresh)
         # Track previous RSI values to detect crossing above buy threshold
         self.previous_rsi = {}  # {symbol: previous_rsi_value}
@@ -503,8 +507,12 @@ class BinanceRSIBot:
                 # Skip USDT, stablecoins, and very small balances
                 if asset == 'USDT' or asset in stablecoins or balance < 0.001:
                     continue
+                if asset in IGNORED_ASSETS:
+                    continue
                     
                 symbol = f"{asset}USDT"
+                if symbol in IGNORED_SYMBOLS:
+                    continue
                 # Check if this is a valid trading pair
                 try:
                     # Try to get price to verify it's a valid pair (silently to avoid error spam)
@@ -655,10 +663,15 @@ class BinanceRSIBot:
             # Get trades for symbols where we have or had positions
             symbols_to_check = set()
             for asset, balance in balances.items():
-                if asset != 'USDT' and balance > 0:
-                    symbol = f"{asset}USDT"
-                    if symbol in usdt_symbols:
-                        symbols_to_check.add(symbol)
+                if asset == 'USDT' or balance <= 0:
+                    continue
+                if asset in IGNORED_ASSETS:
+                    continue
+                symbol = f"{asset}USDT"
+                if symbol in IGNORED_SYMBOLS:
+                    continue
+                if symbol in usdt_symbols:
+                    symbols_to_check.add(symbol)
             
             # Limit symbols_to_check to avoid too many API calls (max 30 symbols)
             if len(symbols_to_check) < 30:
@@ -666,6 +679,8 @@ class BinanceRSIBot:
                 common_symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT', 
                                 'XRPUSDT', 'DOGEUSDT', 'DOTUSDT', 'MATICUSDT', 'LINKUSDT']
                 for symbol in common_symbols:
+                    if symbol in IGNORED_SYMBOLS:
+                        continue
                     if symbol in usdt_symbols and symbol not in symbols_to_check:
                         symbols_to_check.add(symbol)
                         if len(symbols_to_check) >= 30:
@@ -674,12 +689,14 @@ class BinanceRSIBot:
             # If no symbols found, check a few common ones
             if not symbols_to_check:
                 common_symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT']
-                symbols_to_check = {s for s in common_symbols if s in usdt_symbols}
+                symbols_to_check = {s for s in common_symbols if s in usdt_symbols and s not in IGNORED_SYMBOLS}
             
             print(f"   Checking {len(symbols_to_check)} symbols for trade history...")
             
             # Fetch trades for each symbol
             for symbol in symbols_to_check:
+                if symbol in IGNORED_SYMBOLS:
+                    continue
                 try:
                     trades = self.client.get_my_trades(symbol=symbol, limit=limit)
                     for trade in trades:
@@ -1137,8 +1154,12 @@ class BinanceRSIBot:
                 # Skip USDT, stablecoins, and very small balances
                 if asset == 'USDT' or asset in stablecoins or total_balance < 0.0001:
                     continue
+                if asset in IGNORED_ASSETS:
+                    continue
                 
                 symbol = f"{asset}USDT"
+                if symbol in IGNORED_SYMBOLS:
+                    continue
                 
                 # First check if symbol is valid (if we have exchange info)
                 if valid_symbols and symbol not in valid_symbols:
@@ -1802,13 +1823,19 @@ class BinanceRSIBot:
                 'source': 'binance_api'
             }, namespace='/')
         
-        # Check for existing positions from Binance account
-        detected_trade = self.detect_existing_positions()
-        if detected_trade:
-            self.active_trade = detected_trade
-            active_trade = detected_trade
-            print(f"🔄 Restored active trade from account: {detected_trade['symbol']}")
-            # Emit to web interface
+        # Check for existing positions from Binance account only if none persisted locally
+        detected_trade = self.active_trade
+        if not self.active_trade:
+            detected_trade = self.detect_existing_positions()
+            if detected_trade:
+                self.active_trade = detected_trade
+                active_trade = detected_trade
+                print(f"🔄 Restored active trade from account: {detected_trade['symbol']}")
+                # Emit to web interface
+                socketio.emit('active_trade_update', {'active_trade': detected_trade}, namespace='/')
+        else:
+            detected_trade = self.active_trade
+            print(f"🔄 Restored active trade from persisted data: {detected_trade['symbol']}")
             socketio.emit('active_trade_update', {'active_trade': detected_trade}, namespace='/')
         
         # Get top coins initially (top 25 gainers by 24-hour price change)
