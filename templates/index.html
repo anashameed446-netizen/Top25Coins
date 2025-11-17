@@ -817,6 +817,8 @@
         let coinsData = [];
         let activeTrade = null;
         let tradeHistory = [];
+        let buyThreshold = 70.0;
+        let sellThreshold = 69.0;
 
         // Optimized coin data cache for incremental updates
         let coinDataCache = new Map();
@@ -985,7 +987,7 @@
             const cells = row.querySelectorAll('td');
             if (cells.length >= 5) {
                 const rsiClass = coin.rsi >= 70 ? 'rsi-buy' : coin.rsi <= 30 ? 'rsi-sell' : 'rsi-neutral';
-                const status = coin.rsi >= 70 ? '🟢 BUY SIGNAL' : coin.rsi <= 30 ? '🔴 OVERSOLD' : '⚪ Monitoring';
+                const status = coin.rsi >= buyThreshold ? `🟢 BUY SIGNAL (≥ ${buyThreshold})` : coin.rsi <= sellThreshold ? `🔴 OVERSOLD (≤ ${sellThreshold})` : '⚪ Monitoring';
                 
                 // Only update if values changed (avoid unnecessary DOM updates)
                 const priceCell = cells[1];
@@ -1023,7 +1025,7 @@
         // Helper function to create coin row HTML
         function createCoinRow(coin) {
             const rsiClass = coin.rsi >= 70 ? 'rsi-buy' : coin.rsi <= 30 ? 'rsi-sell' : 'rsi-neutral';
-            const status = coin.rsi >= 70 ? '🟢 BUY SIGNAL' : coin.rsi <= 30 ? '🔴 OVERSOLD' : '⚪ Monitoring';
+            const status = coin.rsi >= buyThreshold ? `🟢 BUY SIGNAL (≥ ${buyThreshold})` : coin.rsi <= sellThreshold ? `🔴 OVERSOLD (≤ ${sellThreshold})` : '⚪ Monitoring';
             
             // Format 24h change with color
             let change24hHtml = 'N/A';
@@ -1050,7 +1052,7 @@
             tr.setAttribute('data-symbol', coin.symbol);
             
             const rsiClass = coin.rsi >= 70 ? 'rsi-buy' : coin.rsi <= 30 ? 'rsi-sell' : 'rsi-neutral';
-            const status = coin.rsi >= 70 ? '🟢 BUY SIGNAL' : coin.rsi <= 30 ? '🔴 OVERSOLD' : '⚪ Monitoring';
+            const status = coin.rsi >= buyThreshold ? `🟢 BUY SIGNAL (≥ ${buyThreshold})` : coin.rsi <= sellThreshold ? `🔴 OVERSOLD (≤ ${sellThreshold})` : '⚪ Monitoring';
             
             // Format 24h change with color
             let change24hHtml = 'N/A';
@@ -1396,6 +1398,8 @@
                 document.getElementById('buy-rsi').value = settings.buy_rsi || settings.buy_min || 70.0;
                 document.getElementById('sell-rsi').value = settings.sell_rsi || settings.sell_min || 69.0;
                 document.getElementById('take-profit-rsi').value = settings.take_profit_rsi || 100.0;
+                buyThreshold = parseFloat(settings.buy_rsi || 70.0);
+                sellThreshold = parseFloat(settings.sell_rsi || 69.0);
             } catch (error) {
                 console.error('Error loading RSI settings:', error);
             }
@@ -1451,6 +1455,8 @@
                 
                 const messageEl = document.getElementById('rsi-message');
                 if (result.success) {
+                    buyThreshold = buyRsi;
+                    sellThreshold = sellRsi;
                     messageEl.textContent = result.message;
                     messageEl.className = 'message success';
                     messageEl.style.display = 'block';
