@@ -1743,6 +1743,7 @@ class BinanceRSIBot:
         global bot_running, coins_data, active_trade
         
         print("🤖 Bot starting...")
+        print(f"   API Key: {self.api_key[:10]}... (first 10 chars for verification)")
         print(f"📊 Trading mode: {'ENABLED' if trading_enabled else 'DISABLED (Monitoring only)'}")
         
         # Check if client is available
@@ -1851,6 +1852,10 @@ class BinanceRSIBot:
         
         while bot_running:
             try:
+                # Early check - if bot_running changed to False, exit immediately
+                if not bot_running:
+                    break
+                
                 # Periodically refresh the top coins list to get live top 25
                 if update_count % top_coins_refresh_interval == 0:
                     new_symbols = self.get_top_coins(25)
@@ -1913,10 +1918,11 @@ class BinanceRSIBot:
 
 # Initialize bot
 bot = None
+bot_thread = None  # Track bot thread to properly stop it
 
 def start_bot():
     """Start the bot in a separate thread"""
-    global bot
+    global bot, bot_thread
     if API_KEY and API_SECRET:
         rsi_cfg = load_rsi_config()
         bot = BinanceRSIBot(API_KEY, API_SECRET, TESTNET, rsi_config=rsi_cfg)
@@ -1946,7 +1952,7 @@ def get_config():
 @app.route('/api/config', methods=['POST'])
 def update_config():
     """Update configuration"""
-    global API_KEY, API_SECRET, TESTNET, bot, bot_running
+    global API_KEY, API_SECRET, TESTNET, bot, bot_running, bot_thread, active_trade, coins_data, trade_history
     
     data = request.json
     api_key = data.get('api_key', '').strip()
@@ -1968,19 +1974,40 @@ def update_config():
         # Stop existing bot if running
         if bot:
             print("🛑 Stopping existing bot to apply new API credentials...")
-            global bot_running, active_trade, coins_data, trade_history
             bot_running = False
-            # Wait a moment for bot thread to stop
-            time.sleep(2)
+            
+            # Close old bot's client connection to prevent using old API key
+            if hasattr(bot, 'client') and bot.client:
+                try:
+                    # Close any active sessions/connections
+                    if hasattr(bot.client, 'session') and bot.client.session:
+                        bot.client.session.close()
+                    print("   ✅ Old bot client connection closed")
+                except Exception as e:
+                    print(f"   ⚠️  Error closing old bot client: {e}")
+            
+            # Clear active trade in bot instance
+            if hasattr(bot, 'active_trade'):
+                bot.active_trade = None
+            
+            # Wait for bot thread to finish (with timeout)
+            if bot_thread and bot_thread.is_alive():
+                print("   ⏳ Waiting for bot thread to stop...")
+                bot_thread.join(timeout=5)  # Wait up to 5 seconds
+                if bot_thread.is_alive():
+                    print("   ⚠️  Bot thread did not stop within timeout, continuing anyway...")
+                else:
+                    print("   ✅ Bot thread stopped successfully")
             
             # Clear all global state to avoid stale data from old API key
             active_trade = None
             coins_data = {}
             trade_history = []
             
-            # Clear active trade in bot instance if it exists
-            if hasattr(bot, 'active_trade'):
-                bot.active_trade = None
+            # Clear bot and thread references
+            old_bot = bot
+            bot = None
+            bot_thread = None
             
             # Emit clear state updates to web interface
             socketio.emit('active_trade_update', {'active_trade': None}, namespace='/')
@@ -1992,15 +2019,22 @@ def update_config():
                 'source': 'api_key_changed'
             }, namespace='/')
             
+            # Small delay to ensure cleanup
+            time.sleep(1)
+            
             bot_running = True  # Reset for new bot instance
         
         # Reinitialize bot with new credentials
         print("🔄 Restarting bot with new API credentials...")
+        print(f"   API Key: {api_key[:10]}... (new)")
         print("   All previous state cleared - Bot will sync fresh data from new account")
         rsi_cfg = load_rsi_config()
         bot = BinanceRSIBot(API_KEY, API_SECRET, TESTNET, rsi_config=rsi_cfg)
         bot_thread = threading.Thread(target=bot.run, daemon=True)
         bot_thread.start()
+        
+        # Small delay to let bot initialize
+        time.sleep(1)
         
         return jsonify({'success': True, 'message': 'Configuration updated successfully - Bot restarted with new credentials'})
     except Exception as e:
