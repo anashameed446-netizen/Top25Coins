@@ -49,15 +49,25 @@ def save_config(api_key, api_secret, testnet=False, rsi_buy=None, rsi_sell=None,
             'api_secret': api_secret,
             'testnet': str(testnet)
         }
-        existing_rsi = load_rsi_config()
-        final_buy = rsi_buy if rsi_buy is not None else existing_rsi.get('buy_rsi', 70.0)
-        final_sell = rsi_sell if rsi_sell is not None else existing_rsi.get('sell_rsi', 69.0)
-        final_take_profit = take_profit_rsi if take_profit_rsi is not None else existing_rsi.get('take_profit_rsi', 100.0)
-        config['RSI'] = {
-            'buy_rsi': str(final_buy),
-            'sell_rsi': str(final_sell),
-            'take_profit_rsi': str(final_take_profit)
-        }
+        # Add RSI settings if provided, otherwise preserve existing values
+        if rsi_buy is not None:
+            rsi_config = {
+                'buy_rsi': str(rsi_buy),
+                'sell_rsi': str(rsi_sell)
+            }
+            if take_profit_rsi is not None:
+                rsi_config['take_profit_rsi'] = str(take_profit_rsi)
+            else:
+                existing = load_rsi_config()
+                rsi_config['take_profit_rsi'] = str(existing.get('take_profit_rsi', 100.0))
+            config['RSI'] = rsi_config
+        else:
+            existing = load_rsi_config()
+            config['RSI'] = {
+                'buy_rsi': str(existing['buy_rsi']),
+                'sell_rsi': str(existing['sell_rsi']),
+                'take_profit_rsi': str(existing.get('take_profit_rsi', 100.0))
+            }
         with open(config_file, 'w') as f:
             config.write(f)
         print(f"✅ Configuration saved to {config_file}")
@@ -75,12 +85,12 @@ def load_rsi_config():
             return {
                 'buy_rsi': float(config['RSI'].get('buy_rsi', 70.0)),
                 'sell_rsi': float(config['RSI'].get('sell_rsi', 69.0)),
-                'take_profit_rsi': float(config['RSI'].get('take_profit_rsi', 100.0))
+                'take_profit_rsi': float(config['RSI'].get('take_profit_rsi', 100.0))  # Default to 100 (disabled)
             }
     return {
         'buy_rsi': 70.0,
         'sell_rsi': 69.0,
-        'take_profit_rsi': 100.0
+        'take_profit_rsi': 100.0  # Default to 100 (disabled)
     }
 
 API_KEY, API_SECRET, TESTNET = load_config()
@@ -99,6 +109,84 @@ active_trade = None
 trade_history = []
 bot_running = False
 trading_enabled = False  # Trading control flag
+
+# Trade data persistence
+TRADE_DATA_FILE = 'trade_data.json'
+IGNORED_SYMBOLS = {'AEURUSDT', 'EURIUSDT'}
+IGNORED_ASSETS = {'AEUR', 'EURI'}
+
+
+def load_trade_data():
+    """Load trade history and active trade from disk"""
+    global trade_history, active_trade
+    if os.path.exists(TRADE_DATA_FILE):
+        try:
+            with open(TRADE_DATA_FILE, 'r') as f:
+                data = json.load(f)
+                trade_history = data.get('trade_history', [])
+                active_trade = data.get('active_trade')
+                print(f"📁 Loaded {len(trade_history)} trades from {TRADE_DATA_FILE}")
+        except Exception as e:
+            print(f"⚠️  Could not load trade data from {TRADE_DATA_FILE}: {e}")
+
+
+def save_trade_data():
+    """Persist trade history and active trade to disk"""
+    try:
+        data = {
+            'trade_history': trade_history,
+            'active_trade': active_trade
+        }
+        with open(TRADE_DATA_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"⚠️  Could not save trade data to {TRADE_DATA_FILE}: {e}")
+
+
+def _trade_key(trade: Dict) -> tuple:
+    """Create a hashable key for a trade entry"""
+    symbol = trade.get('symbol')
+    buy_time = trade.get('buy_time') or ''
+    sell_time = trade.get('sell_time') or ''
+    quantity = round(float(trade.get('quantity', 0) or 0), 8)
+    return (symbol, buy_time, sell_time, quantity)
+
+
+def merge_trade_histories(remote_trades: Optional[List[Dict]], local_trades: List[Dict]) -> List[Dict]:
+    """Merge remote Binance trades with locally stored trades, preserving RSI data from local store."""
+    remote_trades = remote_trades or []
+    local_map = {_trade_key(t): t for t in local_trades}
+    seen_keys = set()
+    merged = []
+
+    for trade in remote_trades:
+        key = _trade_key(trade)
+        local = local_map.get(key)
+        if local:
+            trade = {**trade}  # shallow copy
+            trade['buy_rsi'] = local.get('buy_rsi')
+            trade['sell_rsi'] = local.get('sell_rsi')
+            if not trade.get('buy_time') and local.get('buy_time'):
+                trade['buy_time'] = local['buy_time']
+            if not trade.get('sell_time') and local.get('sell_time'):
+                trade['sell_time'] = local['sell_time']
+        else:
+            trade = {**trade}
+            trade.setdefault('buy_rsi', None)
+            trade.setdefault('sell_rsi', None)
+        merged.append(trade)
+        seen_keys.add(key)
+
+    for key, local in local_map.items():
+        if key not in seen_keys:
+            merged.append(local.copy())
+
+    merged.sort(key=lambda t: t.get('sell_time') or t.get('buy_time') or '', reverse=True)
+    return merged
+
+
+# Load trade data at startup (before bot starts)
+load_trade_data()
 
 class BinanceRSIBot:
     def __init__(self, api_key: str, api_secret: str, testnet: bool = False, rsi_config: dict = None):
@@ -180,13 +268,15 @@ class BinanceRSIBot:
         if rsi_config:
             self.rsi_buy = float(rsi_config.get('buy_rsi', 70.0))
             self.rsi_sell = float(rsi_config.get('sell_rsi', 69.0))
-            self.take_profit_rsi = float(rsi_config.get('take_profit_rsi', 100.0))
+            self.take_profit_rsi = float(rsi_config.get('take_profit_rsi', 100.0))  # Default 100 = disabled
         else:
             rsi_cfg = load_rsi_config()
             self.rsi_buy = rsi_cfg['buy_rsi']
             self.rsi_sell = rsi_cfg['sell_rsi']
-            self.take_profit_rsi = rsi_cfg.get('take_profit_rsi', 100.0)
+            self.take_profit_rsi = rsi_cfg.get('take_profit_rsi', 100.0)  # Default 100 = disabled
         self.active_trade = None
+        if active_trade:
+            self.active_trade = active_trade.copy()
         self.update_interval = 1  # seconds - near real-time updates (1 second refresh)
         # Track previous RSI values to detect crossing above buy threshold
         self.previous_rsi = {}  # {symbol: previous_rsi_value}
@@ -222,8 +312,8 @@ class BinanceRSIBot:
         self.rsi_sell = float(sell_rsi)
         if take_profit_rsi is not None:
             self.take_profit_rsi = float(take_profit_rsi)
-        take_profit_msg = f", Take Profit at RSI {self.take_profit_rsi}" if self.take_profit_rsi < 100 else ", Take Profit disabled"
-        print(f"📊 RSI settings updated: Buy when RSI crosses above {self.rsi_buy}, Sell when RSI drops to {self.rsi_sell}{take_profit_msg}")
+        take_profit_str = f", Take Profit at RSI {self.take_profit_rsi}" if self.take_profit_rsi < 100 else ", Take Profit: Disabled"
+        print(f"📊 RSI settings updated: Buy when RSI crosses above {self.rsi_buy}, Sell when RSI drops to {self.rsi_sell}{take_profit_str}")
     
     def check_buy_condition(self, symbol: str, current_rsi: float) -> bool:
         """Check if RSI crosses above buy threshold (from below)"""
@@ -242,13 +332,15 @@ class BinanceRSIBot:
         return False
     
     def check_sell_condition(self, rsi: float):
-        """Check if RSI meets sell or take-profit thresholds.
-        Returns tuple (should_sell: bool, reason: str)
+        """Check if RSI meets sell condition (either drops to sell threshold or reaches take profit)
+        Returns: (should_sell: bool, reason: str)
         """
+        # Check take profit condition (if enabled, i.e., < 100)
         if self.take_profit_rsi < 100 and rsi >= self.take_profit_rsi:
-            return True, f"RSI reached take-profit threshold ({self.take_profit_rsi})"
+            return True, f"Take Profit reached at RSI {self.take_profit_rsi}"
+        # Check regular sell condition
         if rsi <= self.rsi_sell:
-            return True, f"RSI dropped to sell threshold ({self.rsi_sell})"
+            return True, f"RSI dropped to {self.rsi_sell}"
         return False, ""
     
     def check_api_permissions(self):
@@ -467,8 +559,12 @@ class BinanceRSIBot:
                 # Skip USDT, stablecoins, and very small balances
                 if asset == 'USDT' or asset in stablecoins or balance < 0.001:
                     continue
+                if asset in IGNORED_ASSETS:
+                    continue
                     
                 symbol = f"{asset}USDT"
+                if symbol in IGNORED_SYMBOLS:
+                    continue
                 # Check if this is a valid trading pair
                 try:
                     # Try to get price to verify it's a valid pair (silently to avoid error spam)
@@ -619,10 +715,15 @@ class BinanceRSIBot:
             # Get trades for symbols where we have or had positions
             symbols_to_check = set()
             for asset, balance in balances.items():
-                if asset != 'USDT' and balance > 0:
-                    symbol = f"{asset}USDT"
-                    if symbol in usdt_symbols:
-                        symbols_to_check.add(symbol)
+                if asset == 'USDT' or balance <= 0:
+                    continue
+                if asset in IGNORED_ASSETS:
+                    continue
+                symbol = f"{asset}USDT"
+                if symbol in IGNORED_SYMBOLS:
+                    continue
+                if symbol in usdt_symbols:
+                    symbols_to_check.add(symbol)
             
             # Limit symbols_to_check to avoid too many API calls (max 30 symbols)
             if len(symbols_to_check) < 30:
@@ -630,6 +731,8 @@ class BinanceRSIBot:
                 common_symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT', 
                                 'XRPUSDT', 'DOGEUSDT', 'DOTUSDT', 'MATICUSDT', 'LINKUSDT']
                 for symbol in common_symbols:
+                    if symbol in IGNORED_SYMBOLS:
+                        continue
                     if symbol in usdt_symbols and symbol not in symbols_to_check:
                         symbols_to_check.add(symbol)
                         if len(symbols_to_check) >= 30:
@@ -638,12 +741,14 @@ class BinanceRSIBot:
             # If no symbols found, check a few common ones
             if not symbols_to_check:
                 common_symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT']
-                symbols_to_check = {s for s in common_symbols if s in usdt_symbols}
+                symbols_to_check = {s for s in common_symbols if s in usdt_symbols and s not in IGNORED_SYMBOLS}
             
             print(f"   Checking {len(symbols_to_check)} symbols for trade history...")
             
             # Fetch trades for each symbol
             for symbol in symbols_to_check:
+                if symbol in IGNORED_SYMBOLS:
+                    continue
                 try:
                     trades = self.client.get_my_trades(symbol=symbol, limit=limit)
                     for trade in trades:
@@ -1101,8 +1206,12 @@ class BinanceRSIBot:
                 # Skip USDT, stablecoins, and very small balances
                 if asset == 'USDT' or asset in stablecoins or total_balance < 0.0001:
                     continue
+                if asset in IGNORED_ASSETS:
+                    continue
                 
                 symbol = f"{asset}USDT"
+                if symbol in IGNORED_SYMBOLS:
+                    continue
                 
                 # First check if symbol is valid (if we have exchange info)
                 if valid_symbols and symbol not in valid_symbols:
@@ -1323,6 +1432,7 @@ class BinanceRSIBot:
             if self.active_trade and any(pos['symbol'] == self.active_trade['symbol'] for pos in sold_positions):
                 self.active_trade = None
                 print("✅ Active trade cleared")
+                save_trade_data()
             
             return sold_positions
             
@@ -1614,10 +1724,10 @@ class BinanceRSIBot:
             if symbol in coins_data and coins_data[symbol].get('rsi') is not None:
                 rsi = coins_data[symbol]['rsi']
                 
-                # Check if RSI meets sell condition
+                # Check if RSI meets sell condition (either drops to sell threshold or reaches take profit)
                 should_sell, reason = self.check_sell_condition(rsi)
                 if should_sell:
-                    print(f"🔄 {reason} (RSI {rsi:.2f}) for {symbol}, selling...")
+                    print(f"🔄 {reason} ({rsi:.2f}) for {symbol}, selling...")
                     
                     # Place sell order
                     order = self.sell_order(symbol, self.active_trade['quantity'])
@@ -1642,6 +1752,7 @@ class BinanceRSIBot:
                         trade_history.append(trade_result)
                         self.active_trade = None
                         active_trade = None
+                        save_trade_data()
                         
                         # Emit trade update immediately (broadcast to all clients)
                         socketio.emit('trade_update', trade_result, namespace='/')
@@ -1709,6 +1820,7 @@ class BinanceRSIBot:
                         'buy_time': datetime.now().isoformat()
                     }
                     active_trade = self.active_trade
+                    save_trade_data()
                     
                     # Emit active trade update to web interface immediately (broadcast to all clients)
                     socketio.emit('active_trade_update', {'active_trade': self.active_trade}, namespace='/')
@@ -1748,28 +1860,35 @@ class BinanceRSIBot:
         # Fetch trade history from Binance
         global trade_history
         binance_trades = self.fetch_trade_history_from_binance(limit=500)
-        if binance_trades:
-            trade_history = binance_trades
-            print(f"📜 Loaded {len(trade_history)} trades from Binance history")
-            # Calculate totals from Binance data
-            total_trades = len(trade_history)
-            total_profit = sum(float(trade.get('profit', 0)) for trade in trade_history)
-            # Emit to web interface (send last 100 trades with totals from Binance)
-            trades_to_emit = trade_history[-100:] if len(trade_history) > 100 else trade_history
-            socketio.emit('trade_history_update', {
-                'trades': trades_to_emit,
-                'total_trades': total_trades,
-                'total_profit': round(total_profit, 2),
-                'source': 'binance_api'
-            }, namespace='/')
+        combined_trades = merge_trade_histories(binance_trades, trade_history)
+        if not trade_history and binance_trades:
+            trade_history.extend([t for t in combined_trades if _trade_key(t) not in {_trade_key(ct) for ct in trade_history}])
+            save_trade_data()
+            print(f"📜 Loaded {len(combined_trades)} trades from Binance history")
+        # Emit combined view
+        total_trades = len(combined_trades)
+        total_profit = sum(float(trade.get('profit', 0) or 0) for trade in combined_trades)
+        trades_to_emit = combined_trades[:100]
+        socketio.emit('trade_history_update', {
+            'trades': trades_to_emit,
+            'total_trades': total_trades,
+            'total_profit': round(total_profit, 2),
+            'source': 'binance_api'
+        }, namespace='/')
         
-        # Check for existing positions from Binance account
-        detected_trade = self.detect_existing_positions()
-        if detected_trade:
-            self.active_trade = detected_trade
-            active_trade = detected_trade
-            print(f"🔄 Restored active trade from account: {detected_trade['symbol']}")
-            # Emit to web interface
+        # Check for existing positions from Binance account only if none persisted locally
+        detected_trade = self.active_trade
+        if not self.active_trade:
+            detected_trade = self.detect_existing_positions()
+            if detected_trade:
+                self.active_trade = detected_trade
+                active_trade = detected_trade
+                print(f"🔄 Restored active trade from account: {detected_trade['symbol']}")
+                # Emit to web interface
+                socketio.emit('active_trade_update', {'active_trade': detected_trade}, namespace='/')
+        else:
+            detected_trade = self.active_trade
+            print(f"🔄 Restored active trade from persisted data: {detected_trade['symbol']}")
             socketio.emit('active_trade_update', {'active_trade': detected_trade}, namespace='/')
         
         # Get top coins initially (top 25 gainers by 24-hour price change)
@@ -1886,10 +2005,11 @@ class BinanceRSIBot:
 
 # Initialize bot
 bot = None
+bot_thread = None
 
 def start_bot():
     """Start the bot in a separate thread"""
-    global bot
+    global bot, bot_thread
     if API_KEY and API_SECRET:
         rsi_cfg = load_rsi_config()
         bot = BinanceRSIBot(API_KEY, API_SECRET, TESTNET, rsi_config=rsi_cfg)
@@ -1919,7 +2039,7 @@ def get_config():
 @app.route('/api/config', methods=['POST'])
 def update_config():
     """Update configuration"""
-    global API_KEY, API_SECRET, TESTNET, bot, bot_running
+    global API_KEY, API_SECRET, TESTNET, bot, bot_running, bot_thread
     
     data = request.json
     api_key = data.get('api_key', '').strip()
@@ -1941,10 +2061,13 @@ def update_config():
         # Stop existing bot if running
         if bot:
             print("🛑 Stopping existing bot to apply new API credentials...")
-            global bot_running
             bot_running = False
-            # Wait a moment for bot thread to stop
-            time.sleep(2)
+            if bot_thread and bot_thread.is_alive():
+                bot_thread.join(timeout=5)
+                if bot_thread.is_alive():
+                    print("⚠️  Previous bot thread is still running; forcing restart anyway.")
+            bot = None
+            bot_thread = None
             bot_running = True  # Reset for new bot instance
         
         # Reinitialize bot with new credentials
@@ -1974,21 +2097,18 @@ def get_trade_history():
     limit = request.args.get('limit', 100, type=int)
     
     # If bot is available, fetch fresh data from Binance
+    remote_trades = []
     if bot:
         try:
-            # Fetch fresh trade history from Binance
-            binance_trades = bot.fetch_trade_history_from_binance(limit=1000)
-            if binance_trades:
-                trade_history = binance_trades
+            remote_trades = bot.fetch_trade_history_from_binance(limit=max(limit * 2, 500))
         except Exception as e:
             print(f"⚠️  Error fetching fresh trades from Binance: {e}")
-            # Fall back to cached trade_history
     
-    # Calculate totals from trade_history (which comes from Binance)
-    total_trades = len(trade_history)
-    total_profit = sum(float(trade.get('profit', 0)) for trade in trade_history)
+    combined_trades = merge_trade_histories(remote_trades, trade_history)
+    total_trades = len(combined_trades)
+    total_profit = sum(float(trade.get('profit', 0) or 0) for trade in combined_trades)
     
-    trades_to_return = trade_history[-limit:] if len(trade_history) > limit else trade_history
+    trades_to_return = combined_trades[:limit]
     
     return jsonify({
         'trades': trades_to_return,
@@ -2019,7 +2139,7 @@ def set_rsi_settings():
     
     buy_rsi = float(data.get('buy_rsi', 70.0))
     sell_rsi = float(data.get('sell_rsi', 69.0))
-    take_profit_rsi = float(data.get('take_profit_rsi', 100.0))
+    take_profit_rsi = float(data.get('take_profit_rsi', 100.0))  # Default 100 = disabled
     
     # Validate values
     if buy_rsi < 0 or buy_rsi > 100:
@@ -2028,12 +2148,16 @@ def set_rsi_settings():
         return jsonify({'success': False, 'message': 'Sell RSI must be between 0 and 100'}), 400
     if take_profit_rsi < 0 or take_profit_rsi > 100:
         return jsonify({'success': False, 'message': 'Take Profit RSI must be between 0 and 100'}), 400
+    
+    # Validate take profit is above buy threshold if enabled
     if take_profit_rsi < 100 and take_profit_rsi <= buy_rsi:
-        return jsonify({'success': False, 'message': 'Take Profit RSI must be greater than Buy RSI threshold (or set to 100 to disable)'}), 400
+        return jsonify({'success': False, 'message': 'Take Profit RSI must be greater than Buy RSI threshold'}), 400
     
     try:
         # Save to config file
         save_config(API_KEY, API_SECRET, TESTNET, buy_rsi, sell_rsi, take_profit_rsi)
+        # Persist to trade data file so UI refresh retains values
+        save_trade_data()
         
         # Update bot if it exists
         if bot:
@@ -2162,6 +2286,7 @@ def stop_trading():
                             'profit_pct': pos['profit_pct']
                         }
                         trade_history.append(trade_result)
+                        save_trade_data()
                         
                         # Emit trade update
                         socketio.emit('trade_update', trade_result)
@@ -2231,10 +2356,12 @@ def stop_trading():
             active_trade = None
         # Emit active trade update to clear it in UI
         socketio.emit('active_trade_update', {'active_trade': None}, namespace='/')
+        save_trade_data()
     elif remaining_active_trade:
         # Still have active trade, emit it to UI
         socketio.emit('active_trade_update', {'active_trade': remaining_active_trade}, namespace='/')
         print(f"⚠️  Active trade still exists: {remaining_active_trade.get('symbol')}")
+        save_trade_data()
     
     # Update trade history totals and emit
     if sold_positions:

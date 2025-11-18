@@ -721,9 +721,9 @@
                         <small>Sell when RSI drops to or below this value</small>
                     </div>
                     <div class="form-group">
-                        <label for="take-profit-rsi">Take Profit RSI (optional)</label>
+                        <label for="take-profit-rsi">Take Profit RSI (Optional)</label>
                         <input type="number" id="take-profit-rsi" name="take_profit_rsi" step="0.1" min="0" max="100" placeholder="100.0">
-                        <small>Also sell when RSI reaches this level (set to 100 to disable)</small>
+                        <small>Auto-sell when RSI reaches this level (set to 100 to disable)</small>
                     </div>
                 </div>
                 <div style="background: rgba(102, 126, 234, 0.1); padding: 16px; border-radius: 12px; margin-bottom: 20px; border: 1px solid rgba(102, 126, 234, 0.2);">
@@ -732,7 +732,7 @@
                         The bot monitors only coins with RSI &lt; Buy Threshold from the top 25 gainers.<br>
                         When a coin's RSI crosses above the Buy Threshold, it will be bought.<br>
                         When the RSI drops to the Sell Threshold, it will be sold.<br>
-                        (Optional) If the RSI reaches your Take Profit level first, the trade will close to lock in gains.
+                        <strong>Take Profit:</strong> If set (below 100), the trade will also close when RSI reaches this level.
                     </p>
                 </div>
                 <div class="button-group">
@@ -819,7 +819,6 @@
         let tradeHistory = [];
         let buyThreshold = 70.0;
         let sellThreshold = 69.0;
-        let takeProfitThreshold = 100.0;
 
         // Optimized coin data cache for incremental updates
         let coinDataCache = new Map();
@@ -1396,15 +1395,11 @@
                 const response = await fetch('/api/rsi/settings');
                 const settings = await response.json();
                 
-                const buyValue = settings.buy_rsi ?? settings.buy_min ?? 70.0;
-                const sellValue = settings.sell_rsi ?? settings.sell_min ?? 69.0;
-                const takeProfitValue = settings.take_profit_rsi ?? 100.0;
-                document.getElementById('buy-rsi').value = buyValue;
-                document.getElementById('sell-rsi').value = sellValue;
-                document.getElementById('take-profit-rsi').value = takeProfitValue;
-                buyThreshold = parseFloat(buyValue);
-                sellThreshold = parseFloat(sellValue);
-                takeProfitThreshold = parseFloat(takeProfitValue);
+                document.getElementById('buy-rsi').value = settings.buy_rsi || settings.buy_min || 70.0;
+                document.getElementById('sell-rsi').value = settings.sell_rsi || settings.sell_min || 69.0;
+                document.getElementById('take-profit-rsi').value = settings.take_profit_rsi || 100.0;
+                buyThreshold = parseFloat(settings.buy_rsi || 70.0);
+                sellThreshold = parseFloat(settings.sell_rsi || 69.0);
             } catch (error) {
                 console.error('Error loading RSI settings:', error);
             }
@@ -1416,8 +1411,7 @@
             
             const buyRsi = parseFloat(document.getElementById('buy-rsi').value);
             const sellRsi = parseFloat(document.getElementById('sell-rsi').value);
-            const takeProfitInput = document.getElementById('take-profit-rsi').value;
-            const takeProfitRsi = takeProfitInput === '' ? 100.0 : parseFloat(takeProfitInput);
+            const takeProfitRsi = parseFloat(document.getElementById('take-profit-rsi').value) || 100.0;
             
             if (isNaN(buyRsi) || isNaN(sellRsi) || isNaN(takeProfitRsi)) {
                 alert('Please enter valid numbers for RSI values');
@@ -1440,7 +1434,7 @@
             }
             
             if (takeProfitRsi < 100 && takeProfitRsi <= buyRsi) {
-                alert('Take Profit RSI must be greater than the Buy RSI threshold (or set to 100 to disable).');
+                alert('Take Profit RSI must be greater than Buy RSI threshold');
                 return;
             }
             
@@ -1463,7 +1457,6 @@
                 if (result.success) {
                     buyThreshold = buyRsi;
                     sellThreshold = sellRsi;
-                    takeProfitThreshold = takeProfitRsi;
                     messageEl.textContent = result.message;
                     messageEl.className = 'message success';
                     messageEl.style.display = 'block';
