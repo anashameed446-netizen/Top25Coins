@@ -1595,6 +1595,11 @@ class BinanceRSIBot:
                     if rsi is not None:
                         # Check if RSI crosses above buy threshold
                         if self.check_buy_condition(symbol, rsi):
+                            # SOLUTION 1: Skip buy if already above take profit to avoid immediate sell
+                            if self.take_profit_rsi < 100 and rsi >= self.take_profit_rsi:
+                                print(f"⏭️  [MONITORING] Skipping buy for {symbol}: RSI {rsi:.2f} already above take-profit threshold {self.take_profit_rsi} (would trigger immediate sell)")
+                                continue
+                            
                             price = data.get('price', 0)
                             change_24h = data.get('change_24h', 0)
                             change_str = f"+{change_24h:.2f}%" if change_24h else "N/A"
@@ -1659,6 +1664,12 @@ class BinanceRSIBot:
                 if rsi is not None:
                     # Check if RSI crosses above buy threshold (from below)
                     if self.check_buy_condition(symbol, rsi):
+                        # SOLUTION 1: Skip buy if already above take profit to avoid immediate sell
+                        # If take profit is enabled (take_profit_rsi < 100) and RSI is already above it, skip this buy
+                        if self.take_profit_rsi < 100 and rsi >= self.take_profit_rsi:
+                            print(f"⏭️  Skipping buy for {symbol}: RSI {rsi:.2f} already above take-profit threshold {self.take_profit_rsi} (would trigger immediate sell)")
+                            continue
+                        
                         buy_candidates.append({
                             'symbol': symbol,
                             'rsi': rsi,
