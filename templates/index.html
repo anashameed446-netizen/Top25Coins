@@ -720,13 +720,19 @@
                         <input type="number" id="sell-rsi" name="sell_rsi" step="0.1" min="0" max="100" placeholder="69.0">
                         <small>Sell when RSI drops to or below this value</small>
                     </div>
+                    <div class="form-group">
+                        <label for="take-profit-rsi">Take Profit RSI (optional)</label>
+                        <input type="number" id="take-profit-rsi" name="take_profit_rsi" step="0.1" min="0" max="100" placeholder="100.0">
+                        <small>Also sell when RSI reaches this level (set to 100 to disable)</small>
+                    </div>
                 </div>
                 <div style="background: rgba(102, 126, 234, 0.1); padding: 16px; border-radius: 12px; margin-bottom: 20px; border: 1px solid rgba(102, 126, 234, 0.2);">
                     <strong style="color: var(--text-primary); font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px;">📋 Trading Strategy:</strong>
                     <p style="color: var(--text-secondary); font-size: 13px; margin-top: 8px; line-height: 1.6;">
                         The bot monitors only coins with RSI &lt; Buy Threshold from the top 25 gainers.<br>
                         When a coin's RSI crosses above the Buy Threshold, it will be bought.<br>
-                        When the RSI drops to the Sell Threshold, it will be sold.
+                        When the RSI drops to the Sell Threshold, it will be sold.<br>
+                        (Optional) If the RSI reaches your Take Profit level first, the trade will close to lock in gains.
                     </p>
                 </div>
                 <div class="button-group">
@@ -811,6 +817,9 @@
         let coinsData = [];
         let activeTrade = null;
         let tradeHistory = [];
+        let buyThreshold = 70.0;
+        let sellThreshold = 69.0;
+        let takeProfitThreshold = 100.0;
 
         // Optimized coin data cache for incremental updates
         let coinDataCache = new Map();
@@ -979,7 +988,7 @@
             const cells = row.querySelectorAll('td');
             if (cells.length >= 5) {
                 const rsiClass = coin.rsi >= 70 ? 'rsi-buy' : coin.rsi <= 30 ? 'rsi-sell' : 'rsi-neutral';
-                const status = coin.rsi >= 70 ? '🟢 BUY SIGNAL' : coin.rsi <= 30 ? '🔴 OVERSOLD' : '⚪ Monitoring';
+                const status = coin.rsi >= buyThreshold ? `🟢 BUY SIGNAL (≥ ${buyThreshold})` : coin.rsi <= sellThreshold ? `🔴 OVERSOLD (≤ ${sellThreshold})` : '⚪ Monitoring';
                 
                 // Only update if values changed (avoid unnecessary DOM updates)
                 const priceCell = cells[1];
@@ -1017,7 +1026,7 @@
         // Helper function to create coin row HTML
         function createCoinRow(coin) {
             const rsiClass = coin.rsi >= 70 ? 'rsi-buy' : coin.rsi <= 30 ? 'rsi-sell' : 'rsi-neutral';
-            const status = coin.rsi >= 70 ? '🟢 BUY SIGNAL' : coin.rsi <= 30 ? '🔴 OVERSOLD' : '⚪ Monitoring';
+            const status = coin.rsi >= buyThreshold ? `🟢 BUY SIGNAL (≥ ${buyThreshold})` : coin.rsi <= sellThreshold ? `🔴 OVERSOLD (≤ ${sellThreshold})` : '⚪ Monitoring';
             
             // Format 24h change with color
             let change24hHtml = 'N/A';
@@ -1044,7 +1053,7 @@
             tr.setAttribute('data-symbol', coin.symbol);
             
             const rsiClass = coin.rsi >= 70 ? 'rsi-buy' : coin.rsi <= 30 ? 'rsi-sell' : 'rsi-neutral';
-            const status = coin.rsi >= 70 ? '🟢 BUY SIGNAL' : coin.rsi <= 30 ? '🔴 OVERSOLD' : '⚪ Monitoring';
+            const status = coin.rsi >= buyThreshold ? `🟢 BUY SIGNAL (≥ ${buyThreshold})` : coin.rsi <= sellThreshold ? `🔴 OVERSOLD (≤ ${sellThreshold})` : '⚪ Monitoring';
             
             // Format 24h change with color
             let change24hHtml = 'N/A';
@@ -1387,8 +1396,15 @@
                 const response = await fetch('/api/rsi/settings');
                 const settings = await response.json();
                 
-                document.getElementById('buy-rsi').value = settings.buy_rsi || settings.buy_min || 70.0;
-                document.getElementById('sell-rsi').value = settings.sell_rsi || settings.sell_min || 69.0;
+                const buyValue = settings.buy_rsi ?? settings.buy_min ?? 70.0;
+                const sellValue = settings.sell_rsi ?? settings.sell_min ?? 69.0;
+                const takeProfitValue = settings.take_profit_rsi ?? 100.0;
+                document.getElementById('buy-rsi').value = buyValue;
+                document.getElementById('sell-rsi').value = sellValue;
+                document.getElementById('take-profit-rsi').value = takeProfitValue;
+                buyThreshold = parseFloat(buyValue);
+                sellThreshold = parseFloat(sellValue);
+                takeProfitThreshold = parseFloat(takeProfitValue);
             } catch (error) {
                 console.error('Error loading RSI settings:', error);
             }
@@ -1400,8 +1416,10 @@
             
             const buyRsi = parseFloat(document.getElementById('buy-rsi').value);
             const sellRsi = parseFloat(document.getElementById('sell-rsi').value);
+            const takeProfitInput = document.getElementById('take-profit-rsi').value;
+            const takeProfitRsi = takeProfitInput === '' ? 100.0 : parseFloat(takeProfitInput);
             
-            if (isNaN(buyRsi) || isNaN(sellRsi)) {
+            if (isNaN(buyRsi) || isNaN(sellRsi) || isNaN(takeProfitRsi)) {
                 alert('Please enter valid numbers for RSI values');
                 return;
             }
@@ -1416,6 +1434,16 @@
                 return;
             }
             
+            if (takeProfitRsi < 0 || takeProfitRsi > 100) {
+                alert('Take Profit RSI must be between 0 and 100');
+                return;
+            }
+            
+            if (takeProfitRsi < 100 && takeProfitRsi <= buyRsi) {
+                alert('Take Profit RSI must be greater than the Buy RSI threshold (or set to 100 to disable).');
+                return;
+            }
+            
             try {
                 const response = await fetch('/api/rsi/settings', {
                     method: 'POST',
@@ -1424,7 +1452,8 @@
                     },
                     body: JSON.stringify({
                         buy_rsi: buyRsi,
-                        sell_rsi: sellRsi
+                        sell_rsi: sellRsi,
+                        take_profit_rsi: takeProfitRsi
                     })
                 });
                 
@@ -1432,6 +1461,9 @@
                 
                 const messageEl = document.getElementById('rsi-message');
                 if (result.success) {
+                    buyThreshold = buyRsi;
+                    sellThreshold = sellRsi;
+                    takeProfitThreshold = takeProfitRsi;
                     messageEl.textContent = result.message;
                     messageEl.className = 'message success';
                     messageEl.style.display = 'block';
