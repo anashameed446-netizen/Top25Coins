@@ -1773,6 +1773,15 @@ class BinanceRSIBot:
                 'total_profit': round(total_profit, 2),
                 'source': 'binance_api'
             }, namespace='/')
+        else:
+            # Clear trade history if no trades found (important when API key changes)
+            trade_history = []
+            socketio.emit('trade_history_update', {
+                'trades': [],
+                'total_trades': 0,
+                'total_profit': 0,
+                'source': 'binance_api'
+            }, namespace='/')
         
         # Check for existing positions from Binance account
         detected_trade = self.detect_existing_positions()
@@ -1782,6 +1791,13 @@ class BinanceRSIBot:
             print(f"🔄 Restored active trade from account: {detected_trade['symbol']}")
             # Emit to web interface
             socketio.emit('active_trade_update', {'active_trade': detected_trade}, namespace='/')
+        else:
+            # Explicitly clear active trade if no position found (important when API key changes)
+            self.active_trade = None
+            active_trade = None
+            print("✅ No active trade found in account - Starting fresh")
+            # Emit clear update to web interface
+            socketio.emit('active_trade_update', {'active_trade': None}, namespace='/')
         
         # Get top coins initially (top 25 gainers by 24-hour price change)
         symbols = self.get_top_coins(25)
@@ -1952,14 +1968,35 @@ def update_config():
         # Stop existing bot if running
         if bot:
             print("🛑 Stopping existing bot to apply new API credentials...")
-            global bot_running
+            global bot_running, active_trade, coins_data, trade_history
             bot_running = False
             # Wait a moment for bot thread to stop
             time.sleep(2)
+            
+            # Clear all global state to avoid stale data from old API key
+            active_trade = None
+            coins_data = {}
+            trade_history = []
+            
+            # Clear active trade in bot instance if it exists
+            if hasattr(bot, 'active_trade'):
+                bot.active_trade = None
+            
+            # Emit clear state updates to web interface
+            socketio.emit('active_trade_update', {'active_trade': None}, namespace='/')
+            socketio.emit('coins_update', {'coins': []}, namespace='/')
+            socketio.emit('trade_history_update', {
+                'trades': [],
+                'total_trades': 0,
+                'total_profit': 0,
+                'source': 'api_key_changed'
+            }, namespace='/')
+            
             bot_running = True  # Reset for new bot instance
         
         # Reinitialize bot with new credentials
         print("🔄 Restarting bot with new API credentials...")
+        print("   All previous state cleared - Bot will sync fresh data from new account")
         rsi_cfg = load_rsi_config()
         bot = BinanceRSIBot(API_KEY, API_SECRET, TESTNET, rsi_config=rsi_cfg)
         bot_thread = threading.Thread(target=bot.run, daemon=True)
