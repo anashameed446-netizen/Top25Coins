@@ -226,19 +226,31 @@ class BinanceRSIBot:
         print(f"📊 RSI settings updated: Buy when RSI crosses above {self.rsi_buy}, Sell when RSI drops to {self.rsi_sell}{take_profit_msg}")
     
     def check_buy_condition(self, symbol: str, current_rsi: float) -> bool:
-        """Check if RSI crosses above buy threshold (from below)"""
+        """Check if RSI reaches or crosses buy threshold (exactly at 60 or crosses from below)
+        
+        Rules:
+        - Buy when RSI crosses from below 60 to exactly 60 or slightly above (within 0.5)
+        - Buy when RSI is exactly at 60 when first detected (no previous data)
+        - Do NOT buy if RSI is already significantly above 60 (like 61+) to avoid late entries
+        """
         previous_rsi = self.previous_rsi.get(symbol)
+        
         if previous_rsi is not None:
-            # Check if RSI crossed above buy threshold (was below, now above)
+            # We have previous RSI data - check for crossing
+            # Buy if RSI crossed from below threshold to at/above threshold
+            # But only if current RSI is close to threshold (within 0.5) to avoid buying late
             if previous_rsi < self.rsi_buy and current_rsi >= self.rsi_buy:
+                # Only buy if current RSI is close to buy threshold (within 0.5)
+                # This prevents buying coins that already jumped to 65+ before we detected them
+                if current_rsi <= self.rsi_buy + 0.5:
+                    return True
+        else:
+            # No previous RSI data - coin just appeared in monitoring
+            # Only buy if RSI is exactly at the buy threshold (60.0) or very close (within 0.1)
+            # This ensures we only buy coins that are at the entry point, not already past it
+            if abs(current_rsi - self.rsi_buy) <= 0.1:
                 return True
-        # Also check if current RSI is above threshold and we don't have previous data yet
-        # This handles the case where a coin first appears in monitoring and is already above threshold
-        # But we only buy if it's clearly above the threshold (not just at threshold)
-        elif current_rsi > self.rsi_buy:
-            # If we don't have previous RSI, assume it was below threshold if current is significantly above
-            # This is a safety check - we prefer to wait for a clear crossing signal
-            return False
+        
         return False
     
     def check_sell_condition(self, rsi: float):
@@ -1618,9 +1630,14 @@ class BinanceRSIBot:
             
             if symbol in coins_data and coins_data[symbol].get('rsi') is not None:
                 rsi = coins_data[symbol]['rsi']
+                buy_rsi = self.active_trade.get('buy_rsi', 'N/A')
                 
                 # Check if RSI meets sell condition
                 should_sell, reason = self.check_sell_condition(rsi)
+                
+                # Log current status periodically for debugging stuck trades
+                # (This helps identify why a trade isn't closing)
+                
                 if should_sell:
                     print(f"🔄 {reason} (RSI {rsi:.2f}) for {symbol}, selling...")
                     
@@ -1662,9 +1679,14 @@ class BinanceRSIBot:
             for symbol, data in coins_data.items():
                 rsi = data.get('rsi')
                 if rsi is not None:
-                    # Check if RSI crosses above buy threshold (from below)
+                    # Skip coins that are already significantly above buy threshold
+                    # This prevents buying coins that are already past the entry point
+                    if rsi > self.rsi_buy + 0.5:
+                        continue
+                    
+                    # Check if RSI crosses above buy threshold (from below) or reaches exactly 60
                     if self.check_buy_condition(symbol, rsi):
-                        # SOLUTION 1: Skip buy if already above take profit to avoid immediate sell
+                        # Skip buy if already above take profit to avoid immediate sell
                         # If take profit is enabled (take_profit_rsi < 100) and RSI is already above it, skip this buy
                         if self.take_profit_rsi < 100 and rsi >= self.take_profit_rsi:
                             print(f"⏭️  Skipping buy for {symbol}: RSI {rsi:.2f} already above take-profit threshold {self.take_profit_rsi} (would trigger immediate sell)")
