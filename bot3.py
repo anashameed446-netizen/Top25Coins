@@ -1809,11 +1809,33 @@ class BinanceRSIBot:
         # Check for existing positions from Binance account
         detected_trade = self.detect_existing_positions()
         if detected_trade:
-            self.active_trade = detected_trade
-            active_trade = detected_trade
-            print(f"🔄 Restored active trade from account: {detected_trade['symbol']}")
-            # Emit to web interface
-            socketio.emit('active_trade_update', {'active_trade': detected_trade}, namespace='/')
+            # Validate that the detected trade is recent (within last 30 days)
+            # This ensures we only restore trades that are likely from recent RSI-based trading
+            # Increased from 7 to 30 days to avoid clearing legitimate positions
+            try:
+                buy_time = datetime.fromisoformat(detected_trade.get('buy_time', ''))
+                days_ago = (datetime.now() - buy_time.replace(tzinfo=None)).total_seconds() / 86400
+                
+                if days_ago <= 30:
+                    self.active_trade = detected_trade
+                    active_trade = detected_trade
+                    print(f"🔄 Restored active trade from account: {detected_trade['symbol']} (from {days_ago:.1f} days ago)")
+                    # Emit to web interface
+                    socketio.emit('active_trade_update', {'active_trade': detected_trade}, namespace='/')
+                else:
+                    # Position is too old, but still show it with a warning
+                    print(f"⚠️  Detected position {detected_trade['symbol']} is {days_ago:.1f} days old (older than 30 days)")
+                    print(f"   Still restoring it - you may want to manually close this position")
+                    self.active_trade = detected_trade
+                    active_trade = detected_trade
+                    socketio.emit('active_trade_update', {'active_trade': detected_trade}, namespace='/')
+            except Exception as e:
+                # If we can't parse the date, still restore it but log a warning
+                print(f"⚠️  Could not validate trade age: {e}, restoring anyway")
+                self.active_trade = detected_trade
+                active_trade = detected_trade
+                print(f"🔄 Restored active trade from account: {detected_trade['symbol']}")
+                socketio.emit('active_trade_update', {'active_trade': detected_trade}, namespace='/')
         else:
             # Explicitly clear active trade if no position found (important when API key changes)
             self.active_trade = None
@@ -1863,11 +1885,15 @@ class BinanceRSIBot:
                 symbols = []
         
         # Start monitoring immediately with initial coins
+        print(f"📊 Starting to monitor {len(symbols)} coins...")
         self.update_coins_data(symbols)
         
         # Emit initial data to web interface
         if coins_data:
+            print(f"✅ Emitting initial coins data: {len(coins_data)} coins")
             socketio.emit('coins_update', {'coins': list(coins_data.values())}, namespace='/')
+        else:
+            print("⚠️  No coins data available to emit")
         
         update_count = 0
         top_coins_refresh_interval = 30  # Refresh top coins list every 30 updates (30 sec if update_interval is 1 sec) - faster refresh to catch new gainers
@@ -2211,22 +2237,32 @@ def get_active_trade():
     
     # Check if bot has an active trade
     if bot and bot.active_trade:
+        print(f"📊 API: Returning active trade from bot: {bot.active_trade['symbol']}")
         return jsonify({'active_trade': bot.active_trade})
     elif active_trade:
+        print(f"📊 API: Returning active trade from global: {active_trade['symbol']}")
         return jsonify({'active_trade': active_trade})
     else:
         # Try to detect from Binance
         if bot:
             try:
+                print("🔍 API: Attempting to detect active trade from Binance...")
                 detected_trade = bot.detect_existing_positions()
                 if detected_trade:
                     bot.active_trade = detected_trade
                     active_trade = detected_trade
+                    print(f"✅ API: Detected and restored active trade: {detected_trade['symbol']}")
                     # Emit to web interface
                     socketio.emit('active_trade_update', {'active_trade': detected_trade}, namespace='/')
                     return jsonify({'active_trade': detected_trade})
+                else:
+                    print("ℹ️  API: No active trade detected in Binance account")
             except Exception as e:
-                print(f"Error detecting active trade: {e}")
+                print(f"❌ Error detecting active trade: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print("⚠️  API: Bot not initialized yet")
         
         return jsonify({'active_trade': None})
 
@@ -2404,15 +2440,15 @@ def stop_trading():
             'symbols': []
         })
 
-@socketio.on('connect')
+@socketio.on('connect', namespace='/')
 def handle_connect():
     """Handle client connection"""
     global trade_history, bot, coins_data, active_trade, trading_enabled
     try:
         print('Client connected')
-        # Send initial data
-        emit('coins_update', {'coins': list(coins_data.values())})
-        emit('active_trade_update', {'active_trade': active_trade})
+        # Send initial data with namespace
+        emit('coins_update', {'coins': list(coins_data.values())}, namespace='/')
+        emit('active_trade_update', {'active_trade': active_trade}, namespace='/')
         # Calculate totals from Binance trade data
         total_trades = len(trade_history)
         total_profit = sum(float(trade.get('profit', 0)) for trade in trade_history)
@@ -2423,8 +2459,9 @@ def handle_connect():
             'total_trades': total_trades,
             'total_profit': round(total_profit, 2),
             'source': 'binance_api'
-        })
-        emit('trading_status_update', {'trading_enabled': trading_enabled})
+        }, namespace='/')
+        emit('trading_status_update', {'trading_enabled': trading_enabled}, namespace='/')
+        print(f'✅ Sent initial data: {len(coins_data)} coins, {len(trades_to_send)} trades')
     except Exception as e:
         print(f'Error in handle_connect: {e}')
         import traceback

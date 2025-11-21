@@ -5569,11 +5569,5 @@
       "profit_pct": -5.043227665706056
     }
   ],
-  "active_trade": {
-    "symbol": "LUNAUSDT",
-    "buy_price": 0.0819,
-    "quantity": 117.54,
-    "buy_rsi": 61.15,
-    "buy_time": "2025-11-17T14:03:02.339599"
-  }
+  "active_trade": null
 }

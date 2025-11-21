@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,7 +8,7 @@
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
-        
+
         * {
             margin: 0;
             padding: 0;
@@ -35,7 +36,7 @@
         body {
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
             background: var(--light-bg);
-            background-image: 
+            background-image:
                 radial-gradient(at 0% 0%, rgba(102, 126, 234, 0.08) 0px, transparent 50%),
                 radial-gradient(at 100% 0%, rgba(118, 75, 162, 0.08) 0px, transparent 50%),
                 radial-gradient(at 100% 100%, rgba(79, 172, 254, 0.06) 0px, transparent 50%),
@@ -285,13 +286,20 @@
             right: -50%;
             width: 200%;
             height: 200%;
-            background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 70%);
+            background: radial-gradient(circle, rgba(255, 255, 255, 0.1) 0%, transparent 70%);
             animation: pulse 3s ease-in-out infinite;
         }
 
         @keyframes pulse {
-            0%, 100% { opacity: 0.3; }
-            50% { opacity: 0.6; }
+
+            0%,
+            100% {
+                opacity: 0.3;
+            }
+
+            50% {
+                opacity: 0.6;
+            }
         }
 
         .active-trade-card h3 {
@@ -661,6 +669,7 @@
                 opacity: 0;
                 transform: translateY(-10px);
             }
+
             to {
                 opacity: 1;
                 transform: translateY(0);
@@ -680,6 +689,7 @@
         }
     </style>
 </head>
+
 <body>
     <div class="container">
         <div class="admin-panel">
@@ -692,7 +702,8 @@
                     </div>
                     <div class="form-group">
                         <label for="api-secret">Binance API Secret</label>
-                        <input type="password" id="api-secret" name="api_secret" placeholder="Enter your Binance API secret">
+                        <input type="password" id="api-secret" name="api_secret"
+                            placeholder="Enter your Binance API secret">
                     </div>
                 </div>
                 <div class="form-group">
@@ -706,45 +717,59 @@
                 </div>
                 <div id="config-message" class="message"></div>
             </form>
-            
-            <h3 style="margin-top: 30px; margin-bottom: 20px; background: var(--primary-gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; font-size: 22px; font-weight: 700;"><span class="icon-emoji">📊</span>RSI Trading Settings</h3>
+
+            <h3
+                style="margin-top: 30px; margin-bottom: 20px; background: var(--primary-gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; font-size: 22px; font-weight: 700;">
+                <span class="icon-emoji">📊</span>RSI Trading Settings
+            </h3>
             <form id="rsi-settings-form">
                 <div class="form-row">
                     <div class="form-group">
                         <label for="buy-rsi">Buy RSI Threshold</label>
-                        <input type="number" id="buy-rsi" name="buy_rsi" step="0.1" min="0" max="100" placeholder="70.0">
+                        <input type="number" id="buy-rsi" name="buy_rsi" step="0.1" min="0" max="100"
+                            placeholder="70.0">
                         <small>Buy when RSI crosses above this value (from below)</small>
                     </div>
                     <div class="form-group">
                         <label for="sell-rsi">Sell RSI Threshold</label>
-                        <input type="number" id="sell-rsi" name="sell_rsi" step="0.1" min="0" max="100" placeholder="69.0">
+                        <input type="number" id="sell-rsi" name="sell_rsi" step="0.1" min="0" max="100"
+                            placeholder="69.0">
                         <small>Sell when RSI drops to or below this value</small>
                     </div>
                     <div class="form-group">
                         <label for="take-profit-rsi">Take Profit RSI (Optional)</label>
-                        <input type="number" id="take-profit-rsi" name="take_profit_rsi" step="0.1" min="0" max="100" placeholder="100.0">
+                        <input type="number" id="take-profit-rsi" name="take_profit_rsi" step="0.1" min="0" max="100"
+                            placeholder="100.0">
                         <small>Auto-sell when RSI reaches this level (set to 100 to disable)</small>
                     </div>
                 </div>
-                <div style="background: rgba(102, 126, 234, 0.1); padding: 16px; border-radius: 12px; margin-bottom: 20px; border: 1px solid rgba(102, 126, 234, 0.2);">
-                    <strong style="color: var(--text-primary); font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px;">📋 Trading Strategy:</strong>
+                <div
+                    style="background: rgba(102, 126, 234, 0.1); padding: 16px; border-radius: 12px; margin-bottom: 20px; border: 1px solid rgba(102, 126, 234, 0.2);">
+                    <strong
+                        style="color: var(--text-primary); font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px;">📋
+                        Trading Strategy:</strong>
                     <p style="color: var(--text-secondary); font-size: 13px; margin-top: 8px; line-height: 1.6;">
                         The bot monitors only coins with RSI &lt; Buy Threshold from the top 25 gainers.<br>
                         When a coin's RSI crosses above the Buy Threshold, it will be bought.<br>
                         When the RSI drops to the Sell Threshold, it will be sold.<br>
-                        <strong>Take Profit:</strong> If set (below 100), the trade will also close when RSI reaches this level.
+                        <strong>Take Profit:</strong> If set (below 100), the trade will also close when RSI reaches
+                        this level.
                     </p>
                 </div>
                 <div class="button-group">
                     <button type="submit" class="btn btn-primary"><span>💾 Save RSI Settings</span></button>
-                    <button type="button" id="start-trading" class="btn btn-success" disabled><span>▶️ Start Trading</span></button>
-                    <button type="button" id="stop-trading" class="btn btn-danger" disabled><span>⏹️ Stop Trading</span></button>
+                    <button type="button" id="start-trading" class="btn btn-success" disabled><span>▶️ Start
+                            Trading</span></button>
+                    <button type="button" id="stop-trading" class="btn btn-danger" disabled><span>⏹️ Stop
+                            Trading</span></button>
                 </div>
                 <div id="rsi-message" class="message"></div>
             </form>
-            
+
             <div style="margin-top: 24px; padding-top: 20px; border-top: 2px solid var(--border-color);">
-                <strong style="color: var(--text-primary); font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px;">Trading Status:</strong>
+                <strong
+                    style="color: var(--text-primary); font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px;">Trading
+                    Status:</strong>
                 <span id="trading-status" class="status-indicator status-disabled">DISABLED</span>
             </div>
         </div>
@@ -813,7 +838,7 @@
             forceNew: false,
             autoConnect: true
         });
-        
+
         let coinsData = [];
         let activeTrade = null;
         let tradeHistory = [];
@@ -830,7 +855,7 @@
         function updateCoinsTable(coins) {
             coinsData = coins;
             const now = Date.now();
-            
+
             // Throttle updates to reduce DOM manipulation
             if (updatePending || (now - lastUpdateTime) < MIN_UPDATE_INTERVAL) {
                 updatePending = true;
@@ -840,7 +865,7 @@
                 });
                 return;
             }
-            
+
             performCoinsTableUpdate(coins);
             lastUpdateTime = now;
         }
@@ -848,7 +873,7 @@
         // Perform the actual table update with incremental DOM changes
         function performCoinsTableUpdate(coins) {
             const container = document.getElementById('coins-container');
-            
+
             if (coins.length === 0) {
                 container.innerHTML = '<div class="loading">No data available</div>';
                 return;
@@ -866,7 +891,7 @@
                 const fragment = document.createDocumentFragment();
                 table = document.createElement('table');
                 table.className = 'coins-table';
-                
+
                 const thead = document.createElement('thead');
                 thead.innerHTML = `
                     <tr>
@@ -878,13 +903,13 @@
                     </tr>
                 `;
                 table.appendChild(thead);
-                
+
                 tbody = document.createElement('tbody');
                 sortedCoins.forEach(coin => {
                     tbody.appendChild(createCoinRowElement(coin));
                 });
                 table.appendChild(tbody);
-                
+
                 fragment.appendChild(table);
                 container.innerHTML = '';
                 container.appendChild(fragment);
@@ -892,7 +917,7 @@
                 // Incremental update - only update changed rows and reorder if needed
                 const scrollTop = container.scrollTop;
                 const existingRows = new Map();
-                
+
                 // Build map of existing rows
                 Array.from(tbody.querySelectorAll('tr')).forEach(row => {
                     const symbol = row.getAttribute('data-symbol');
@@ -909,7 +934,7 @@
                 sortedCoins.forEach((coin) => {
                     processedSymbols.add(coin.symbol);
                     const existingRow = existingRows.get(coin.symbol);
-                    
+
                     if (existingRow) {
                         // Update existing row in place (no DOM recreation)
                         updateCoinRow(existingRow, coin);
@@ -958,7 +983,7 @@
                     const firstCurrent = currentRows[0]?.getAttribute('data-symbol');
                     const firstDesired = sortedCoins[0]?.symbol;
                     const needsReorder = firstCurrent !== firstDesired;
-                    
+
                     // Only reorder if top coin changed (most common case) or if we added/removed rows
                     if (needsReorder || newRows.length > 0 || rowsToRemove.length > 0) {
                         // Use fragment for efficient reordering
@@ -988,14 +1013,14 @@
             if (cells.length >= 5) {
                 const rsiClass = coin.rsi >= 70 ? 'rsi-buy' : coin.rsi <= 30 ? 'rsi-sell' : 'rsi-neutral';
                 const status = coin.rsi >= buyThreshold ? `🟢 BUY SIGNAL (≥ ${buyThreshold})` : coin.rsi <= sellThreshold ? `🔴 OVERSOLD (≤ ${sellThreshold})` : '⚪ Monitoring';
-                
+
                 // Only update if values changed (avoid unnecessary DOM updates)
                 const priceCell = cells[1];
-                const newPrice = `$${coin.price.toLocaleString('en-US', {minimumFractionDigits: 4, maximumFractionDigits: 4})}`;
+                const newPrice = `$${coin.price.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`;
                 if (priceCell.textContent !== newPrice) {
                     priceCell.textContent = newPrice;
                 }
-                
+
                 // Update 24h change
                 const changeCell = cells[2];
                 let change24hHtml = 'N/A';
@@ -1005,7 +1030,7 @@
                     change24hHtml = `<span class="${changeClass}">${changeSign}${coin.change_24h.toFixed(2)}%</span>`;
                 }
                 changeCell.innerHTML = change24hHtml;
-                
+
                 // Update RSI
                 const rsiCell = cells[3];
                 const newRsi = coin.rsi.toFixed(2);
@@ -1013,7 +1038,7 @@
                     rsiCell.textContent = newRsi;
                     rsiCell.className = rsiClass;
                 }
-                
+
                 // Update status
                 const statusCell = cells[4];
                 if (statusCell.textContent !== status) {
@@ -1026,7 +1051,7 @@
         function createCoinRow(coin) {
             const rsiClass = coin.rsi >= 70 ? 'rsi-buy' : coin.rsi <= 30 ? 'rsi-sell' : 'rsi-neutral';
             const status = coin.rsi >= buyThreshold ? `🟢 BUY SIGNAL (≥ ${buyThreshold})` : coin.rsi <= sellThreshold ? `🔴 OVERSOLD (≤ ${sellThreshold})` : '⚪ Monitoring';
-            
+
             // Format 24h change with color
             let change24hHtml = 'N/A';
             if (coin.change_24h !== null && coin.change_24h !== undefined) {
@@ -1034,11 +1059,11 @@
                 const changeSign = coin.change_24h >= 0 ? '+' : '';
                 change24hHtml = `<span class="${changeClass}">${changeSign}${coin.change_24h.toFixed(2)}%</span>`;
             }
-            
+
             return `
                 <tr data-symbol="${coin.symbol}">
                     <td><strong>${coin.symbol}</strong></td>
-                    <td>$${coin.price.toLocaleString('en-US', {minimumFractionDigits: 4, maximumFractionDigits: 4})}</td>
+                    <td>$${coin.price.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 })}</td>
                     <td>${change24hHtml}</td>
                     <td class="${rsiClass}">${coin.rsi.toFixed(2)}</td>
                     <td>${status}</td>
@@ -1050,10 +1075,10 @@
         function createCoinRowElement(coin) {
             const tr = document.createElement('tr');
             tr.setAttribute('data-symbol', coin.symbol);
-            
+
             const rsiClass = coin.rsi >= 70 ? 'rsi-buy' : coin.rsi <= 30 ? 'rsi-sell' : 'rsi-neutral';
             const status = coin.rsi >= buyThreshold ? `🟢 BUY SIGNAL (≥ ${buyThreshold})` : coin.rsi <= sellThreshold ? `🔴 OVERSOLD (≤ ${sellThreshold})` : '⚪ Monitoring';
-            
+
             // Format 24h change with color
             let change24hHtml = 'N/A';
             if (coin.change_24h !== null && coin.change_24h !== undefined) {
@@ -1061,15 +1086,15 @@
                 const changeSign = coin.change_24h >= 0 ? '+' : '';
                 change24hHtml = `<span class="${changeClass}">${changeSign}${coin.change_24h.toFixed(2)}%</span>`;
             }
-            
+
             tr.innerHTML = `
                 <td><strong>${coin.symbol}</strong></td>
-                <td>$${coin.price.toLocaleString('en-US', {minimumFractionDigits: 4, maximumFractionDigits: 4})}</td>
+                <td>$${coin.price.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 })}</td>
                 <td>${change24hHtml}</td>
                 <td class="${rsiClass}">${coin.rsi.toFixed(2)}</td>
                 <td>${status}</td>
             `;
-            
+
             return tr;
         }
 
@@ -1102,8 +1127,17 @@
                 document.getElementById('active-trades-count').textContent = '0';
                 // Update stop trading button state
                 updateStopTradingButton();
+                console.log('Active trade cleared');
                 return;
             }
+
+            // Log the trade update for debugging
+            console.log('Updating active trade display:', {
+                symbol: trade.symbol,
+                buy_price: trade.buy_price,
+                buy_rsi: trade.buy_rsi,
+                buy_time: trade.buy_time
+            });
 
             const buyPrice = parseFloat(trade.buy_price);
             const currentPrice = coinsData.find(c => c.symbol === trade.symbol)?.price || buyPrice;
@@ -1200,17 +1234,17 @@
             connectionStatus = status;
             console.log(`Connection status: ${status} - ${message}`);
         }
-        
+
         socket.on('connect', () => {
             const transport = socket.io.engine.transport.name;
             console.log('Connected to server via', transport);
             updateConnectionStatus('connected', `Connected via ${transport}`);
         });
-        
+
         socket.io.on('upgrade', () => {
             console.log('Transport upgraded to', socket.io.engine.transport.name);
         });
-        
+
         socket.io.on('upgradeError', (error) => {
             console.warn('Transport upgrade failed, staying on polling:', error);
             // This is OK - polling works fine, just slower but more compatible
@@ -1234,20 +1268,20 @@
                 updateConnectionStatus('reconnecting', 'Transport error, reconnecting...');
             }
         });
-        
+
         socket.on('reconnect', (attemptNumber) => {
             console.log('Reconnected to server after', attemptNumber, 'attempts');
             updateConnectionStatus('connected', `Reconnected after ${attemptNumber} attempts`);
         });
-        
+
         socket.on('reconnect_attempt', (attemptNumber) => {
             console.log('Reconnection attempt', attemptNumber);
         });
-        
+
         socket.on('reconnect_error', (error) => {
             console.error('Reconnection error:', error);
         });
-        
+
         socket.on('reconnect_failed', () => {
             console.error('Reconnection failed. Please refresh the page.');
         });
@@ -1261,16 +1295,28 @@
         });
 
         socket.on('coins_update', (data) => {
-            coinsData = data.coins;
-            updateCoinsTable(data.coins);
-            // Update active trade display with latest prices
-            if (activeTrade) {
-                updateActiveTrade(activeTrade);
+            console.log('📊 Coins update received:', data.coins ? data.coins.length : 0, 'coins');
+            if (data.coins && data.coins.length > 0) {
+                coinsData = data.coins;
+                updateCoinsTable(data.coins);
+                // Update active trade display with latest prices
+                if (activeTrade) {
+                    updateActiveTrade(activeTrade);
+                }
+            } else {
+                console.log('⚠️ Received empty coins data');
+                coinsData = [];
+                updateCoinsTable([]);
             }
         });
 
         socket.on('active_trade_update', (data) => {
-            console.log('Active trade update received:', data);
+            console.log('Active trade update received from server:', data);
+            if (data.active_trade) {
+                console.log('Setting active trade to:', data.active_trade.symbol, 'with RSI:', data.active_trade.buy_rsi);
+            } else {
+                console.log('Clearing active trade');
+            }
             updateActiveTrade(data.active_trade);
             // Update button state when active trade changes
             updateStopTradingButton();
@@ -1315,7 +1361,7 @@
                     tradeHistory = data.trades;
                     updateTradeHistory(tradeHistory);
                     console.log(`Loaded ${data.trades.length} trades from Binance API`);
-                    
+
                     // Update totals from Binance API data
                     if (data.total_trades !== undefined) {
                         document.getElementById('total-trades').textContent = data.total_trades;
@@ -1328,7 +1374,7 @@
                 console.error('Error loading trade history:', error);
             }
         }
-        
+
         // Load trade statistics from Binance API
         async function loadTradeStats() {
             try {
@@ -1343,22 +1389,23 @@
                 console.error('Error loading trade stats:', error);
             }
         }
-        
+
         // Load active trade from Binance on page load
         async function loadActiveTrade() {
             try {
+                console.log('🔍 Loading active trade from API...');
                 const response = await fetch('/api/trades/active');
                 const data = await response.json();
                 if (data.active_trade) {
                     updateActiveTrade(data.active_trade);
-                    console.log('Active trade loaded from Binance:', data.active_trade.symbol);
+                    console.log('✅ Active trade loaded from Binance:', data.active_trade.symbol);
                 } else {
-                    console.log('No active trade found in Binance account');
+                    console.log('ℹ️  No active trade found in Binance account');
                     // Update to clear any existing active trade and update button state
                     updateActiveTrade(null);
                 }
             } catch (error) {
-                console.error('Error loading active trade:', error);
+                console.error('❌ Error loading active trade:', error);
                 // On error, still update button state based on current activeTrade variable
                 updateStopTradingButton();
             }
@@ -1369,17 +1416,17 @@
             try {
                 const response = await fetch('/api/config');
                 const config = await response.json();
-                
+
                 if (config.api_key_set) {
                     document.getElementById('api-key').value = config.api_key;
                 }
                 if (config.testnet) {
                     document.getElementById('testnet').checked = true;
                 }
-                
+
                 tradingEnabled = config.trading_enabled;
                 updateTradingStatus(tradingEnabled);
-                
+
                 // Enable start button if API keys are set
                 if (config.api_key_set && config.api_secret_set) {
                     document.getElementById('start-trading').disabled = tradingEnabled;
@@ -1388,13 +1435,13 @@
                 console.error('Error loading config:', error);
             }
         }
-        
+
         // Load RSI settings
         async function loadRSISettings() {
             try {
                 const response = await fetch('/api/rsi/settings');
                 const settings = await response.json();
-                
+
                 document.getElementById('buy-rsi').value = settings.buy_rsi || settings.buy_min || 70.0;
                 document.getElementById('sell-rsi').value = settings.sell_rsi || settings.sell_min || 69.0;
                 document.getElementById('take-profit-rsi').value = settings.take_profit_rsi || 100.0;
@@ -1404,40 +1451,40 @@
                 console.error('Error loading RSI settings:', error);
             }
         }
-        
+
         // Save RSI settings
         document.getElementById('rsi-settings-form').addEventListener('submit', async (e) => {
             e.preventDefault();
-            
+
             const buyRsi = parseFloat(document.getElementById('buy-rsi').value);
             const sellRsi = parseFloat(document.getElementById('sell-rsi').value);
             const takeProfitRsi = parseFloat(document.getElementById('take-profit-rsi').value) || 100.0;
-            
+
             if (isNaN(buyRsi) || isNaN(sellRsi) || isNaN(takeProfitRsi)) {
                 alert('Please enter valid numbers for RSI values');
                 return;
             }
-            
+
             if (buyRsi < 0 || buyRsi > 100) {
                 alert('Buy RSI must be between 0 and 100');
                 return;
             }
-            
+
             if (sellRsi < 0 || sellRsi > 100) {
                 alert('Sell RSI must be between 0 and 100');
                 return;
             }
-            
+
             if (takeProfitRsi < 0 || takeProfitRsi > 100) {
                 alert('Take Profit RSI must be between 0 and 100');
                 return;
             }
-            
+
             if (takeProfitRsi < 100 && takeProfitRsi <= buyRsi) {
                 alert('Take Profit RSI must be greater than Buy RSI threshold');
                 return;
             }
-            
+
             try {
                 const response = await fetch('/api/rsi/settings', {
                     method: 'POST',
@@ -1450,9 +1497,9 @@
                         take_profit_rsi: takeProfitRsi
                     })
                 });
-                
+
                 const result = await response.json();
-                
+
                 const messageEl = document.getElementById('rsi-message');
                 if (result.success) {
                     buyThreshold = buyRsi;
@@ -1478,7 +1525,7 @@
             tradingEnabled = enabled;
             const statusEl = document.getElementById('trading-status');
             const startBtn = document.getElementById('start-trading');
-            
+
             if (enabled) {
                 statusEl.textContent = 'ENABLED';
                 statusEl.className = 'status-indicator status-enabled';
@@ -1488,7 +1535,7 @@
                 statusEl.className = 'status-indicator status-disabled';
                 startBtn.disabled = false;
             }
-            
+
             // Stop trading button state is controlled by active trade, not trading status
             updateStopTradingButton();
         }
@@ -1496,19 +1543,19 @@
         // Save API credentials
         document.getElementById('config-form').addEventListener('submit', async (e) => {
             e.preventDefault();
-            
+
             const apiKey = document.getElementById('api-key').value.trim();
             const apiSecret = document.getElementById('api-secret').value.trim();
             const testnet = document.getElementById('testnet').checked;
             const messageEl = document.getElementById('config-message');
-            
+
             if (!apiKey || !apiSecret) {
                 messageEl.textContent = 'Please enter both API key and secret';
                 messageEl.className = 'message error';
                 messageEl.style.display = 'block';
                 return;
             }
-            
+
             try {
                 const response = await fetch('/api/config', {
                     method: 'POST',
@@ -1521,17 +1568,17 @@
                         testnet: testnet
                     })
                 });
-                
+
                 const result = await response.json();
-                
+
                 if (result.success) {
                     messageEl.textContent = result.message;
                     messageEl.className = 'message success';
                     messageEl.style.display = 'block';
-                    
+
                     // Enable start button after saving credentials
                     document.getElementById('start-trading').disabled = false;
-                    
+
                     setTimeout(() => {
                         messageEl.style.display = 'none';
                     }, 3000);
@@ -1553,9 +1600,9 @@
                 const response = await fetch('/api/trading/start', {
                     method: 'POST'
                 });
-                
+
                 const result = await response.json();
-                
+
                 if (result.success) {
                     updateTradingStatus(true);
                     // Update stop trading button when trading starts (enables the button)
@@ -1584,27 +1631,27 @@
             } else {
                 confirmMessage = `Are you sure you want to stop trading?\n\n⚠️ All active positions in your Binance account will be sold immediately (regardless of RSI).`;
             }
-            
+
             if (!confirm(confirmMessage)) {
                 return;
             }
-            
+
             const stopBtn = document.getElementById('stop-trading');
             const originalText = stopBtn.innerHTML;
             stopBtn.disabled = true;
             stopBtn.innerHTML = '<span>⏳ Closing positions...</span>';
-            
+
             try {
                 const response = await fetch('/api/trading/stop', {
                     method: 'POST'
                 });
-                
+
                 const result = await response.json();
-                
+
                 if (result.success) {
                     updateTradingStatus(false);
                     const messageEl = document.getElementById('config-message');
-                    
+
                     // Check if trades were sold
                     if (result.trade_sold && result.symbols && result.symbols.length > 0) {
                         const symbolsStr = result.symbols.join(', ');
@@ -1625,7 +1672,7 @@
                         // Clear active trade display
                         updateActiveTrade(null);
                     }
-                    
+
                     messageEl.style.display = 'block';
                     setTimeout(() => {
                         messageEl.style.display = 'none';
@@ -1639,7 +1686,7 @@
                     setTimeout(() => {
                         messageEl.style.display = 'none';
                     }, 5000);
-                    
+
                     // Check if positions are still active
                     if (result.positions_still_active) {
                         // Reload active trade to update button state
@@ -1648,7 +1695,7 @@
                         // No positions active, clear active trade
                         updateActiveTrade(null);
                     }
-                    
+
                     // Update trading status anyway
                     updateTradingStatus(false);
                 }
@@ -1660,7 +1707,7 @@
                 setTimeout(() => {
                     messageEl.style.display = 'none';
                 }, 5000);
-                
+
                 // Reload active trade to check if positions still exist
                 loadActiveTrade();
                 updateTradingStatus(false);
@@ -1683,5 +1730,5 @@
         loadRSISettings();
     </script>
 </body>
-</html>
 
+</html>
