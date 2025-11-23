@@ -117,24 +117,26 @@ IGNORED_ASSETS = {'AEUR', 'EURI'}
 
 
 def load_trade_data():
-    """Load trade history and active trade from disk"""
-    global trade_history, active_trade
+    """Load active trade from disk (trade_history is always fetched dynamically from Binance API)"""
+    global active_trade
     if os.path.exists(TRADE_DATA_FILE):
         try:
             with open(TRADE_DATA_FILE, 'r') as f:
                 data = json.load(f)
-                trade_history = data.get('trade_history', [])
+                # Only load active_trade, trade_history will be fetched dynamically from Binance
                 active_trade = data.get('active_trade')
-                print(f"📁 Loaded {len(trade_history)} trades from {TRADE_DATA_FILE}")
+                if active_trade:
+                    print(f"📁 Loaded active trade from {TRADE_DATA_FILE}: {active_trade.get('symbol', 'Unknown')}")
+                else:
+                    print(f"📁 No active trade found in {TRADE_DATA_FILE}")
         except Exception as e:
             print(f"⚠️  Could not load trade data from {TRADE_DATA_FILE}: {e}")
 
 
 def save_trade_data():
-    """Persist trade history and active trade to disk"""
+    """Persist active trade to disk (trade_history is always fetched dynamically from Binance API)"""
     try:
         data = {
-            'trade_history': trade_history,
             'active_trade': active_trade
         }
         with open(TRADE_DATA_FILE, 'w') as f:
@@ -1866,24 +1868,27 @@ class BinanceRSIBot:
         
         bot_running = True
         
-        # Fetch trade history from Binance
+        # Fetch trade history dynamically from Binance API (always fresh, no hardcoded data)
         global trade_history
-        binance_trades = self.fetch_trade_history_from_binance(limit=500)
-        combined_trades = merge_trade_histories(binance_trades, trade_history)
-        if not trade_history and binance_trades:
-            trade_history.extend([t for t in combined_trades if _trade_key(t) not in {_trade_key(ct) for ct in trade_history}])
-            save_trade_data()
-            print(f"📜 Loaded {len(combined_trades)} trades from Binance history")
-        # Emit combined view
-        total_trades = len(combined_trades)
-        total_profit = sum(float(trade.get('profit', 0) or 0) for trade in combined_trades)
-        trades_to_emit = combined_trades[:100]
-        socketio.emit('trade_history_update', {
-            'trades': trades_to_emit,
-            'total_trades': total_trades,
-            'total_profit': round(total_profit, 2),
-            'source': 'binance_api'
-        }, namespace='/')
+        try:
+            binance_trades = self.fetch_trade_history_from_binance(limit=500)
+            # Always use fresh data from Binance API
+            trade_history = binance_trades if binance_trades else []
+            print(f"📜 Loaded {len(trade_history)} trades dynamically from Binance API")
+            
+            # Emit trade history update
+            total_trades = len(trade_history)
+            total_profit = sum(float(trade.get('profit', 0) or 0) for trade in trade_history)
+            trades_to_emit = trade_history[-100:] if len(trade_history) > 100 else trade_history
+            socketio.emit('trade_history_update', {
+                'trades': trades_to_emit,
+                'total_trades': total_trades,
+                'total_profit': round(total_profit, 2),
+                'source': 'binance_api'
+            }, namespace='/')
+        except Exception as e:
+            print(f"⚠️  Error fetching trade history from Binance: {e}")
+            trade_history = []
         
         # Check for existing positions from Binance account
         # First check if we have persisted active trade
@@ -1976,9 +1981,50 @@ class BinanceRSIBot:
         
         update_count = 0
         top_coins_refresh_interval = 30  # Refresh top coins list every 30 updates (30 sec if update_interval is 1 sec) - faster refresh to catch new gainers
+        active_trade_verify_interval = 30  # Verify active trade still exists in Binance every 30 updates
+        trade_history_refresh_interval = 60  # Refresh trade history from Binance every 60 updates (1 min if update_interval is 1 sec)
         
         while bot_running:
             try:
+                # Periodically refresh trade history from Binance API (always dynamic, no hardcoded data)
+                if update_count % trade_history_refresh_interval == 0:
+                    try:
+                        global trade_history
+                        fresh_trades = self.fetch_trade_history_from_binance(limit=500)
+                        if fresh_trades:
+                            trade_history = fresh_trades
+                            # Emit updated trade history
+                            total_trades = len(trade_history)
+                            total_profit = sum(float(trade.get('profit', 0) or 0) for trade in trade_history)
+                            trades_to_emit = trade_history[-100:] if len(trade_history) > 100 else trade_history
+                            socketio.emit('trade_history_update', {
+                                'trades': trades_to_emit,
+                                'total_trades': total_trades,
+                                'total_profit': round(total_profit, 2),
+                                'source': 'binance_api'
+                            }, namespace='/')
+                    except Exception as e:
+                        print(f"⚠️  Error refreshing trade history: {e}")
+                
+                # Periodically verify active trade still exists in Binance (to detect if manually closed)
+                if update_count % active_trade_verify_interval == 0 and self.active_trade:
+                    try:
+                        # Check if the position still exists in Binance
+                        active_positions = self.check_active_positions()
+                        active_symbols = {pos['symbol'] for pos in active_positions}
+                        
+                        if self.active_trade['symbol'] not in active_symbols:
+                            # Position no longer exists in Binance - clear active trade
+                            print(f"⚠️  Active trade {self.active_trade['symbol']} no longer exists in Binance account - clearing")
+                            self.active_trade = None
+                            global active_trade
+                            active_trade = None
+                            save_trade_data()
+                            socketio.emit('active_trade_update', {'active_trade': None}, namespace='/')
+                            print(f"✅ Active trade cleared - Bot will now check for new buy signals")
+                    except Exception as e:
+                        print(f"⚠️  Error verifying active trade: {e}")
+                
                 # Periodically refresh the top coins list to get live top 25
                 if update_count % top_coins_refresh_interval == 0:
                     new_symbols = self.get_top_coins(25)
@@ -2128,23 +2174,23 @@ def get_trading_status():
 
 @app.route('/api/trades/history', methods=['GET'])
 def get_trade_history():
-    """Get trade history via HTTP - calculated from Binance API data"""
-    global trade_history, bot
+    """Get trade history via HTTP - always fetched dynamically from Binance API"""
+    global bot
     limit = request.args.get('limit', 100, type=int)
     
-    # If bot is available, fetch fresh data from Binance
-    remote_trades = []
+    # Always fetch fresh data from Binance API (no hardcoded data)
+    trades = []
     if bot:
         try:
-            remote_trades = bot.fetch_trade_history_from_binance(limit=max(limit * 2, 500))
+            trades = bot.fetch_trade_history_from_binance(limit=max(limit * 2, 500))
         except Exception as e:
             print(f"⚠️  Error fetching fresh trades from Binance: {e}")
+            trades = []
     
-    combined_trades = merge_trade_histories(remote_trades, trade_history)
-    total_trades = len(combined_trades)
-    total_profit = sum(float(trade.get('profit', 0) or 0) for trade in combined_trades)
+    total_trades = len(trades)
+    total_profit = sum(float(trade.get('profit', 0) or 0) for trade in trades)
     
-    trades_to_return = combined_trades[:limit]
+    trades_to_return = trades[-limit:] if len(trades) > limit else trades
     
     return jsonify({
         'trades': trades_to_return,
@@ -2472,11 +2518,26 @@ def handle_connect():
         # Send initial data with namespace
         emit('coins_update', {'coins': list(coins_data.values())}, namespace='/')
         emit('active_trade_update', {'active_trade': active_trade}, namespace='/')
-        # Calculate totals from Binance trade data
-        total_trades = len(trade_history)
-        total_profit = sum(float(trade.get('profit', 0)) for trade in trade_history)
-        # Send last 100 trades (or all if less than 100) with totals from Binance
-        trades_to_send = trade_history[-100:] if len(trade_history) > 100 else trade_history
+        
+        # Fetch fresh trade history from Binance API (always dynamic, no hardcoded data)
+        trades_to_send = []
+        total_trades = 0
+        total_profit = 0
+        if bot:
+            try:
+                fresh_trades = bot.fetch_trade_history_from_binance(limit=500)
+                if fresh_trades:
+                    trade_history = fresh_trades
+                    trades_to_send = trade_history[-100:] if len(trade_history) > 100 else trade_history
+                    total_trades = len(trade_history)
+                    total_profit = sum(float(trade.get('profit', 0) or 0) for trade in trade_history)
+            except Exception as e:
+                print(f"⚠️  Error fetching trade history on connect: {e}")
+                # Fallback to cached trade_history if available
+                trades_to_send = trade_history[-100:] if len(trade_history) > 100 else trade_history
+                total_trades = len(trade_history)
+                total_profit = sum(float(trade.get('profit', 0) or 0) for trade in trade_history)
+        
         emit('trade_history_update', {
             'trades': trades_to_send,
             'total_trades': total_trades,

@@ -52,3 +52,8 @@ python bot3.py  # ❌ Don't use this
 - **bot.py** - ✅ Main file (USE THIS)
 - **bot2.py** - Old version
 - **bot3.py** - Old version (has issues)
+
+<!-- .\venv\Scripts\Activate -->
+<!-- Set-ExecutionPolicy RemoteSigned -->
+<!-- pip install -r requirements.txt -->
+<!-- python bot.py -->
