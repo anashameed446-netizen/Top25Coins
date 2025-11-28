@@ -1551,6 +1551,10 @@ class BinanceRSIBot:
                         socketio.emit('active_trade_update', {'active_trade': None})
                         print(f"✅ Trade closed: {symbol} | Profit: {trade_result['profit']:.2f} USDT ({trade_result['profit_pct']:.2f}%)")
                         print(f"📊 Active trade cleared - Bot will now check for new buy signals")
+                        
+                        # Force immediate update after trade to ensure bot continues smoothly
+                        time.sleep(0.5)  # Small delay to ensure trade is fully processed
+                        return  # Exit to let main loop continue
         else:
             # NO ACTIVE TRADE - Check for buy signals
             # Only when there's no active trade, look for coins crossing above buy threshold
@@ -1617,6 +1621,10 @@ class BinanceRSIBot:
                     socketio.emit('active_trade_update', {'active_trade': self.active_trade})
                     print(f"✅ Trade started: {symbol} | Buy Price: {buy_price:.4f} | Quantity: {buy_quantity:.4f} | RSI: {rsi:.2f}")
                     print(f"📊 Active trade created - No new trades will start until this trade closes")
+                    
+                    # Force immediate update after trade to ensure bot continues smoothly
+                    time.sleep(0.5)  # Small delay to ensure trade is fully processed
+                    return  # Exit to let main loop continue
                 else:
                     # Trade failed (e.g., insufficient balance)
                     error_msg = f"❌ Failed to buy {symbol}: Insufficient balance or order error"
@@ -1748,7 +1756,12 @@ class BinanceRSIBot:
                         coins_data = {k: v for k, v in coins_data.items() if k in symbols}
                 
                 # Update coins data (emits updates incrementally for faster response)
-                self.update_coins_data(symbols, emit_updates=True)
+                # Wrap in try-except to ensure bot continues even if update fails
+                try:
+                    self.update_coins_data(symbols, emit_updates=True)
+                except Exception as e:
+                    print(f"⚠️  Error updating coins data: {e}")
+                    # Continue anyway
                 
                 # Track coins below buy threshold for logging
                 coins_below_threshold = []  # Track coins below buy threshold for logging
@@ -1772,7 +1785,13 @@ class BinanceRSIBot:
                 
                 # Check trading signals on ALL coins (not filtered) to catch buy signals when they cross above threshold
                 # This ensures we detect when any coin crosses above 70, even if it's not in a filtered list
-                self.check_trading_signals()
+                try:
+                    self.check_trading_signals()
+                except Exception as e:
+                    print(f"⚠️  Error checking trading signals: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    # Continue anyway
                 
                 update_count += 1
                 
