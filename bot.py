@@ -1721,12 +1721,22 @@ class BinanceRSIBot:
         if self.active_trade:
             symbol = self.active_trade['symbol']
             
+            # Double-check that we still have an active trade (防止重复卖出)
+            if not self.active_trade:
+                print("⚠️  Active trade was cleared, skipping sell check")
+                return
+            
             if symbol in coins_data and coins_data[symbol].get('rsi') is not None:
                 rsi = coins_data[symbol]['rsi']
                 
                 # Check if RSI meets sell condition (either drops to sell threshold or reaches take profit)
                 should_sell, reason = self.check_sell_condition(rsi)
                 if should_sell:
+                    # Final check before selling - ensure we still have an active trade
+                    if not self.active_trade or self.active_trade['symbol'] != symbol:
+                        print(f"⚠️  Active trade cleared or changed before sell, skipping {symbol}")
+                        return
+                    
                     print(f"🔄 {reason} ({rsi:.2f}) for {symbol}, selling...")
                     
                     # Place sell order
@@ -1750,6 +1760,9 @@ class BinanceRSIBot:
                         }
                         
                         trade_history.append(trade_result)
+                        
+                        # Clear active trade BEFORE emitting updates to prevent re-checking same coin
+                        sold_symbol = symbol  # Store symbol before clearing trade
                         self.active_trade = None
                         active_trade = None
                         save_trade_data()
@@ -1757,12 +1770,21 @@ class BinanceRSIBot:
                         # Emit trade update immediately (broadcast to all clients)
                         socketio.emit('trade_update', trade_result, namespace='/')
                         socketio.emit('active_trade_update', {'active_trade': None}, namespace='/')
-                        print(f"✅ Trade closed: {symbol} | Profit: {trade_result['profit']:.2f} USDT ({trade_result['profit_pct']:.2f}%)")
+                        print(f"✅ Trade closed: {sold_symbol} | Profit: {trade_result['profit']:.2f} USDT ({trade_result['profit_pct']:.2f}%)")
                         print(f"📊 Active trade cleared - Bot will now check for new buy signals")
+                        
+                        # Remove sold coin from coins_data to prevent immediate re-check
+                        if sold_symbol in coins_data:
+                            del coins_data[sold_symbol]
+                            print(f"🔄 Removed {sold_symbol} from monitoring to prevent duplicate sell attempts")
                         
                         # Force immediate update after trade to ensure bot continues smoothly
                         time.sleep(0.5)  # Small delay to ensure trade is fully processed
                         return  # Exit to let main loop continue
+                    else:
+                        # Sell order failed - don't clear active trade, will retry on next check
+                        print(f"❌ Sell order failed for {symbol} - will retry on next cycle")
+                        # Don't return here - let the loop continue but keep the active trade
         else:
             # NO ACTIVE TRADE - Check for buy signals
             # Only when there's no active trade, look for coins crossing above buy threshold
