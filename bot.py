@@ -1690,7 +1690,7 @@ class BinanceRSIBot:
         
         # Only execute trades if trading is enabled
         if not trading_enabled:
-            # Monitoring mode - just log signals
+            # Monitoring mode - just log signals (reduced spam - only log on changes)
             if self.active_trade:
                 symbol = self.active_trade['symbol']
                 if symbol in coins_data:
@@ -1698,7 +1698,11 @@ class BinanceRSIBot:
                     # Check if RSI meets sell condition
                     should_sell, reason = self.check_sell_condition(rsi)
                     if should_sell:
-                        print(f"🔍 [MONITORING] SELL SIGNAL: {symbol} RSI {rsi:.2f} ({reason}) - Trading disabled")
+                        # Only log if RSI changed significantly (avoid spam)
+                        last_logged_rsi = getattr(self, '_last_logged_sell_rsi', None)
+                        if last_logged_rsi is None or abs(rsi - last_logged_rsi) >= 0.5:
+                            print(f"🔍 [MONITORING] SELL SIGNAL: {symbol} RSI {rsi:.2f} ({reason}) - Trading disabled")
+                            self._last_logged_sell_rsi = rsi
             else:
                 for symbol, data in coins_data.items():
                     rsi = data['rsi']
